@@ -1,0 +1,31 @@
+# -- data: raw downloads, derived products, generated figures ---------------
+data/
+derived/
+figures/
+# (the workflow chart is committed from docs/ instead)
+
+# -- data-format files anywhere (safety net beyond the folders above) -------
+*.nc
+*.tab
+*.csv
+*.dat
+*.npy
+*.npz
+*.grib
+*.zip
+*.h5
+*.hdf5
+
+# -- credentials & local state (never commit) -------------------------------
+.cdsapirc
+*.key
+.env
+randomseed
+
+# -- job logs, caches, OS cruft ---------------------------------------------
+*.out
+*.log
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store

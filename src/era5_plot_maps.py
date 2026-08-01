@@ -1,0 +1,94 @@
+#!/usr/bin/env python
+"""Polar-stereographic maps of inversion strength for one time snapshot.
+
+Examples:
+    python src/era5_plot_maps.py --year 2025 --month 1 --day 1 --hour 12
+    python src/era5_plot_maps.py --year 2025 --month 1 --day 1 --hour 12 --metrics sbi
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import sys
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from era5lib.config import figures_dir, inversion_path, load_config
+from era5lib.io_era5 import open_era5
+from era5lib.mapping import polar_panel
+from era5lib.plotstyle import apply_agu_style, panel_label
+
+# metric key -> (variable, title, colormap kind)
+METRICS = {
+    "sbi": ("sbi_strength", "SBI strength  T(top) − T(2 m)", "seq"),
+    "dt850": ("dt_850_2m", "T(850 hPa) − T(2 m)", "div"),
+    "dt925": ("dt_925_1000", "T(925 hPa) − T(1000 hPa)", "div"),
+}
+
+
+def plot_metric_panel(ax, inv, key: str, south_lat: float) -> None:
+    var, title, kind = METRICS[key]
+    da = inv[var]
+    if key == "sbi":
+        da = da.fillna(0.0)  # not-found = no inversion = 0 K strength
+    polar_panel(ax, da["latitude"].values, da["longitude"].values, da.values,
+                kind=kind, cbar_label=f"{title}  (K)", south_lat=south_lat)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--year", type=int, required=True)
+    parser.add_argument("--month", type=int, required=True)
+    parser.add_argument("--day", type=int, required=True)
+    parser.add_argument("--hour", type=int, required=True)
+    parser.add_argument("--metrics", nargs="+", default=["sbi", "dt850", "dt925"],
+                        choices=list(METRICS))
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--outdir", default=None, help="default: figures/ from config")
+    args = parser.parse_args(argv)
+
+    import cartopy.crs as ccrs
+
+    apply_agu_style()
+    cfg = load_config(args.config)
+    date = dt.date(args.year, args.month, args.day)
+    when = np.datetime64(f"{date:%Y-%m-%d}T{args.hour:02d}:00")
+
+    inv_file = inversion_path(cfg, date)
+    if not inv_file.exists():
+        sys.exit(f"missing {inv_file}\nfix with: python src/era5_inversion.py "
+                 f"--year {date.year} --month {date.month} --days {date.day}")
+    inv = open_era5(inv_file).sel(valid_time=when)
+    # boundary exactly at the southernmost row so no background ring shows
+    south_lat = float(inv["latitude"].values.min())
+
+    n = len(args.metrics)
+    fig, axes = plt.subplots(1, n, figsize=(4.8 * n, 5.9), squeeze=False,
+                             subplot_kw={"projection": ccrs.NorthPolarStereo()},
+                             layout="constrained")
+    # keep the axes region below the title so it clears the 180° labels
+    fig.get_layout_engine().set(rect=(0, 0, 1, 0.92))
+    for i, (ax, key) in enumerate(zip(axes[0], args.metrics)):
+        plot_metric_panel(ax, inv, key, south_lat)
+        panel_label(ax, "abcdefgh"[i], x=-0.02, y=1.05)
+    masked_note = (" — gray: level below ground"
+                   if any(METRICS[k][2] == "div" for k in args.metrics) else "")
+    fig.suptitle(f"ERA5 temperature-inversion strength — "
+                 f"{date:%Y-%m-%d} {args.hour:02d} UTC{masked_note}", y=0.99)
+
+    outdir = Path(args.outdir) if args.outdir else figures_dir(cfg)
+    outdir.mkdir(parents=True, exist_ok=True)
+    out = outdir / f"maps_{date:%Y%m%d}T{args.hour:02d}Z.png"
+    fig.savefig(out, dpi=150)
+    print(f"wrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

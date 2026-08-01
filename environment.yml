@@ -1,0 +1,12 @@
+name: era5
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - cdsapi
+  - xarray
+  - netcdf4
+  - numpy
+  - matplotlib
+  - cartopy
+  - pyyaml

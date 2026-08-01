@@ -1,0 +1,53 @@
+# ERA5 Arctic inversion pipeline — user-editable defaults.
+# CLI arguments override these where applicable.
+
+# Download / analysis domain as [North, West, South, East] (degrees).
+area: [90, -180, 80, 180]
+
+paths:
+  data: data          # raw downloads    -> data/YYYY/MM/DD/
+  derived: derived    # metric netCDFs   -> derived/YYYY/MM/DD/
+  figures: figures
+
+download:
+  default_hours: [0, 6, 12, 18]
+  plev_variables:
+    - fraction_of_cloud_cover
+    - ozone_mass_mixing_ratio
+    - relative_humidity
+    - specific_cloud_ice_water_content
+    - specific_cloud_liquid_water_content
+    - specific_humidity
+    - temperature
+  sfc_variables:
+    - 2m_temperature
+    - skin_temperature
+    - surface_pressure
+    # surface fluxes (for future analyses; unused by the inversion metrics).
+    # Accumulated over the hour ending at valid_time, units J m-2 (divide by
+    # 3600 for W m-2); ERA5 sign convention: positive downward.
+    - surface_sensible_heat_flux
+    - surface_latent_heat_flux
+    - surface_net_solar_radiation
+    - surface_net_thermal_radiation
+    - surface_solar_radiation_downwards
+    - surface_thermal_radiation_downwards
+  pressure_levels: [1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175,
+                    200, 225, 250, 300, 350, 400, 450, 500, 550, 600, 650,
+                    700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000]
+
+# Surface-based inversion (SBI) scan parameters.
+sbi:
+  top_limit_hpa: 500        # do not scan for the inversion top above this level
+  max_embedded_levels: 1    # tolerated consecutive non-increasing levels inside an inversion
+  # sbi_found requires T_top - T_base >= this (K). 0.5 K follows the criterion
+  # used with the Kahl/Serreze algorithm at Arctic radiosonde stations
+  # (doi:10.1175/JAMC-D-21-0054.1); a 0.3 K variant appears in the Ny-Alesund
+  # high-resolution radiosonde climatology (Atmos. Res. 2021). No established
+  # Arctic SBI study uses 1 K.
+  min_strength_k: 0.5
+
+masking:
+  # NaN the fixed-level metrics where their lower level is below ground
+  # (dt_850_2m where sp < 850 hPa; dt_925_1000 where sp < 1000 hPa).
+  mask_fixed_below_ground: true
