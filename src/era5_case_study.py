@@ -46,38 +46,13 @@ K_B = 1.380649e-23
 CASE_DIR = REPO_ROOT / "derived" / "case_study"
 MANIFEST = CASE_DIR / "case_manifest.json"
 RESULTS = CASE_DIR / "case_results.json"
-# MOSAiC level-2 radiosonde profiles (Maturilli et al. 2021, CC-BY-4.0)
-SOUNDING_TAB = REPO_ROOT / "data" / "mosaic" / "soundings" / "PS122_2_radiosonde_202001.tab"
-SOUNDING_URL = "https://doi.pangaea.de/10.1594/PANGAEA.928659?format=textfile"
-_SOUNDING_CACHE = {}
 
 
 def load_sounding_profile(sounding_time, z_max_m=5000.0):
     """T(z) of the MOSAiC level-2 radiosonde nearest the given launch time."""
-    import pandas as pd
-    if not SOUNDING_TAB.exists():
-        SOUNDING_TAB.parent.mkdir(parents=True, exist_ok=True)
-        print(f"downloading MOSAiC radiosonde level-2 data (~60 MB) -> "
-              f"{SOUNDING_TAB.name} ...")
-        try:
-            import urllib.request
-            urllib.request.urlretrieve(SOUNDING_URL, SOUNDING_TAB)
-        except Exception as e:
-            print(f"  download failed ({e}); figure falls back to the derived "
-                  "inversion layers")
-            return None
-    if "df" not in _SOUNDING_CACHE:
-        with open(SOUNDING_TAB) as f:
-            skip = next(i for i, line in enumerate(f) if line.startswith("*/")) + 1
-        df = pd.read_csv(SOUNDING_TAB, sep="\t", skiprows=skip,
-                         usecols=["Date/Time", "Altitude [m]", "TTT [°C]"])
-        df["Date/Time"] = pd.to_datetime(df["Date/Time"], format="ISO8601")
-        _SOUNDING_CACHE["df"] = df
-    df = _SOUNDING_CACHE["df"]
-    st = pd.Timestamp(sounding_time)
-    m = (df["Date/Time"] - st).abs() <= pd.Timedelta("90min")
-    sel = df[m & (df["Altitude [m]"] <= z_max_m)].sort_values("Altitude [m]")
-    if sel.empty:
+    from era5lib.mosaic import sounding_profile
+    sel = sounding_profile(sounding_time, z_max_m=z_max_m)
+    if sel is None:
         return None
     return {"z_m": [float(v) for v in sel["Altitude [m]"].values[::4]],
             "t_k": [float(v) + 273.15 for v in sel["TTT [°C]"].values[::4]]}

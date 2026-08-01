@@ -730,14 +730,18 @@ def compare_stats(cfg, args, manifest, df, w1, w2):
         xvals = df["sbi_strength"].values
         ax.set_xlabel("SBI strength (K)")
     ax.axhline(0, color="#bbbbbb", lw=1)
-    for kind, color, lab in (("lwdn", "#0072B2", "LW$\\downarrow$"),
-                             ("lwup", "#D55E00", "LW$\\uparrow$")):
+    # four distinct hues: cool pair = LWdn (blue lib / green RRTMG), warm
+    # pair = LWup (vermillion lib / pink RRTMG) — simulators never share a hue
+    for kind, c_lib, c_rrt, lab in (
+            ("lwdn", "#0072B2", "#009E73", "LW$\\downarrow$"),
+            ("lwup", "#D55E00", "#CC79A7", "LW$\\uparrow$")):
         e, s, _ = stats[kind]
-        ax.scatter(xvals, s - e, s=9, color=color, alpha=0.3, edgecolors="none",
+        ax.scatter(xvals, s - e, s=9, color=c_lib, alpha=0.35,
+                   edgecolors="none",
                    label=lab + (" libRadtran" if has_rrtmg else ""))
         if has_rrtmg:
             g = df["rrtmg_" + kind + "_sfc"].values
-            ax.scatter(xvals, g - e, s=9, color=color, alpha=0.3, marker="^",
+            ax.scatter(xvals, g - e, s=9, color=c_rrt, alpha=0.35, marker="^",
                        edgecolors="none", label=lab + " RRTMG")
     ax.set_ylabel("bias sim − ERA5 (W m$^{-2}$)")
     ax.legend(frameon=False, fontsize=8 if has_rrtmg else 9,

@@ -177,8 +177,14 @@ expedition drifting at 85–88.6°N inside the domain (final ERA5, `expver 0001`
   matched (median offsets 1.1 h / 7 km). Detection agreement 78.9%; ERA5 SBI
   strength bias −2.0 K (r = +0.27), depth bias +315 m, T2m warm bias +2.95 K
   (r = +0.79) — consistent with the documented winter ERA5 warm-surface /
-  weak-inversion bias. The fixed-level proxies underestimate the observed SBI
-  strength by ~4 K (T925−T1000: r = +0.35; T850−T2m: r = +0.16).
+  weak-inversion bias. The fixed-level metrics are compared against the same
+  metrics derived from the level-2 radiosonde profiles (Maturilli et al.
+  2021) + tower 2 m temperature: T925−T1000 r = +0.80 (bias −1.0 K) and
+  T850−T2m r = +0.60 (bias −3.0 K — almost entirely the +2.95 K T2m warm
+  bias). Both track their observed counterparts far better than either SBI
+  definition tracks the other (r = +0.27), showing the SBI disagreement is
+  mostly criterion/vertical-resolution, not thermodynamic error. (For
+  reference vs obs SBI strength the proxies read ~4 K low.)
 - **LW closure test** (`lw_sim_20200101T12Z*.png`, `lw_sim_stats_*.png`):
   libRadtran + RRTMG-LW broadband fluxes vs ERA5 at 12 UTC. With n = 500
   random pixels per sky: clear-sky LW↑ closes to **−0.16 W/m²** population
