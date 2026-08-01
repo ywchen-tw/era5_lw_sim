@@ -127,7 +127,7 @@ def main() -> int:
     p3 = box(ax, 64, 33.5, 16, 5.5, "era5_rrtmg_sim.py\nRRTMG-LW (climlab),\nfull 3.08$-$1000 $\\mu$m", C_PROC)
     c1 = box(ax, 85, 41.5, 13.5, 5.5, "results CSV\n(simulator column)", C_DATA)
     c2 = box(ax, 85, 33.5, 13.5, 5.5, "era5_lrt_sim.py\ncompare\n3-way vs ERA5", C_PROC)
-    cs = box(ax, 64, 20, 16, 6.5, "era5_case_study.py\nMOSAiC clear + cloudy\npixel walkthrough", C_PROC)
+    cs = box(ax, 64, 20, 16, 6.5, "era5_case_study.py\nera5_mosaic_flux.py\nMOSAiC pixels: walkthrough\n+ full-drift LW closure", C_PROC)
     fg = box(ax, 85, 20, 13.5, 6.5, "figures/*.png", C_FIG)
     # ERA5 data over the top; CAMS through the corridor between columns
     toparc(ax, d1, p1, rad=-0.18, x_frac=0.4)

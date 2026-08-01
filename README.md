@@ -31,6 +31,7 @@ era5_analysis/
 │   ├── era5_lrt_sim.py          # stage 7: libRadtran LW fluxes vs ERA5 (er3t_env!)
 │   ├── era5_rrtmg_sim.py        # stage 7b: RRTMG-LW cross-check via climlab (era5 env)
 │   ├── era5_case_study.py       # MOSAiC clear/cloudy single-pixel walkthrough figures
+│   ├── era5_mosaic_flux.py      # LW simulation at every MOSAiC-matched column
 │   └── era5lib/                 # shared code: config, CDS I/O, science, maps, style
 ├── slurm/                       # CURC job templates (stage 7)
 ├── data/YYYY/MM/DD/             # raw ERA5: era5_{plev,sfc}_YYYYMMDD.nc
@@ -330,6 +331,28 @@ simulators within ~7 W/m² of ERA5 for both components — but ERA5 places ice
 near the surface while the observed lowest cloud base was 5.5 km, and the
 observed LW↓ is ~40 W/m² below ERA5, a reminder that closure against ERA5 is
 not closure against reality).
+
+## MOSAiC drift flux simulation (all matched columns)
+
+`src/era5_mosaic_flux.py` (prep/run/figure, same env split as the case
+study) extends the walkthrough to **every** ERA5 column matched to a MOSAiC
+sounding — 123 unique (pixel, 6-h time) columns in January 2020. Each column
+is simulated twice (clear-sky, and overcast plane-parallel wherever ERA5
+holds condensate) with both libRadtran and RRTMG-LW; an all-sky flux is
+blended with the random-overlap effective cloud fraction f = 1 − Π(1 − cc).
+Soundings sharing a (pixel, time) key are simulated once with their observed
+fluxes averaged (no pseudo-replication; 123 soundings → 123 unique keys this
+month). `figures/mosaic_flux_YYYYMM.png` shows the month-long drift time
+series of LW↓/LW↑ and scatters vs the MOSAiC surface radiometers, with the
+ERA5 flux product as a third contender. Cost: ~1 min of uvspec locally.
+
+Jan 2020 verdict vs the radiometers (n = 118): LW↑ is biased **+11.5 W/m²
+for simulations and ERA5 alike** (r ≈ 0.79) — the documented ERA5 warm skin
+bias, inherited by the simulations through skt. LW↓: libRadtran r = 0.72 /
+RRTMG r = 0.70 vs ERA5's own product r = 0.67 (all ~ +10 W/m² high, rmse
+24 W/m²) — the offline simulations track the radiometer slightly better
+than ERA5's flux product, and the shared overestimate points at ERA5's
+cloud state along the drift, not radiative transfer.
 
 ## Notes on surface fluxes
 
