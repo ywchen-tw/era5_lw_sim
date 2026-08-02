@@ -1,8 +1,10 @@
 #!/usr/bin/env python
-"""Draw the pipeline workflow chart -> docs/workflow.png.
+"""Draw the pipeline workflow charts -> docs/workflow.png (+ _prefire.png).
 
-Lives under docs/ (not figures/) so it can be committed while all generated
-figures stay untracked.
+Two charts: the core inversion + LW-closure pipeline, and a separate one for
+the PREFIRE brightness-temperature / Jacobian stage. They live under docs/
+(not figures/) so they can be committed while all generated figures stay
+untracked.
 """
 
 from __future__ import annotations
@@ -26,9 +28,10 @@ C_FIG = "#e3f2e1"     # figure outputs
 EDGE = "#555555"
 
 
-def box(ax, x, y, w, h, text, fc, fontsize=7.2, bold_first=True, ec=EDGE):
+def box(ax, x, y, w, h, text, fc, fontsize=7.2, bold_first=True, ec=EDGE,
+        ls="-"):
     ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.35",
-                                fc=fc, ec=ec, lw=1.0))
+                                fc=fc, ec=ec, lw=1.0, ls=ls))
     lines = text.split("\n")
     if bold_first and len(lines) > 1:
         ax.text(x + w / 2, y + h - 0.4, lines[0], ha="center", va="top",
@@ -75,18 +78,26 @@ def toparc(ax, a, b, rad, x_frac=0.4, start_frac=0.5):
                                  shrinkA=2, shrinkB=2))
 
 
-def elbow(ax, pts):
+def elbow(ax, pts, ls="-"):
     """Right-angle connector through the given waypoints, arrowhead at the end."""
     xs = [p[0] for p in pts[:-1]]
     ys = [p[1] for p in pts[:-1]]
-    ax.plot(xs, ys, color="#777777", lw=1.0, solid_capstyle="round", zorder=1)
+    ax.plot(xs, ys, color="#777777", lw=1.0, ls=ls, solid_capstyle="round",
+            zorder=1)
     ax.add_patch(FancyArrowPatch(pts[-2], pts[-1], arrowstyle="-|>",
                                  mutation_scale=9, color="#777777", lw=1.0,
-                                 shrinkA=0, shrinkB=2))
+                                 ls=ls, shrinkA=0, shrinkB=2))
 
 
-def main() -> int:
-    apply_agu_style()
+def legend_row(ax, y, entries):
+    for x, fc, lab in entries:
+        ax.add_patch(FancyBboxPatch((x, y), 2.6, 2.2,
+                                    boxstyle="round,pad=0.25", fc=fc, ec=EDGE,
+                                    lw=0.8))
+        ax.text(x + 3.4, y + 1.1, lab, va="center", fontsize=7)
+
+
+def draw_main() -> "plt.Figure":
     fig, ax = plt.subplots(figsize=(13.0, 7.0))
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 67)
@@ -108,7 +119,7 @@ def main() -> int:
     arrow(ax, s2, d2)
     arrow(ax, s3, d3)
 
-    # column 3: inversion analysis (era5 env) -----------------------------
+    # column 3: inversion analysis ----------------------------------------
     a1 = box(ax, 42, 50, 17, 7, "era5_inversion.py\nSBI scan ($\\Delta$T $\\geq$ 0.5 K),\nT$_{850}$$-$T$_{2m}$, T$_{925}$$-$T$_{1000}$", C_PROC)
     a2 = box(ax, 42, 43, 17, 4.5, "era5_plot_profiles.py\nera5_plot_maps.py", C_PROC)
     a3 = box(ax, 42, 36.5, 17, 4.5, "era5_monthly.py\nmonthly climatology", C_PROC)
@@ -142,22 +153,87 @@ def main() -> int:
     arrow(ax, cs, fg)
 
     # legend ---------------------------------------------------------------
-    for x, fc, lab in ((1, C_EXT, "external service"),
-                       (17, C_DATA, "local data"),
-                       (31, C_PROC, "pipeline script"),
-                       (46, C_FIG, "figure output")):
-        ax.add_patch(FancyBboxPatch((x, 12.5), 2.6, 2.2,
-                                    boxstyle="round,pad=0.25", fc=fc, ec=EDGE,
-                                    lw=0.8))
-        ax.text(x + 3.4, 13.6, lab, va="center", fontsize=7)
+    legend_row(ax, 12.5, ((1, C_EXT, "external service"),
+                          (17, C_DATA, "local data"),
+                          (31, C_PROC, "pipeline script"),
+                          (46, C_FIG, "figure output")))
     ax.text(1, 16.8, "Stages run left to right; every stage is an idempotent CLI "
-            "(python src/<script>.py --help).", fontsize=6.6, color="#555555")
+            "(python src/<script>.py --help). PREFIRE BT simulation: see "
+            "docs/workflow_prefire.png.", fontsize=6.6, color="#555555")
     ax.set_ylim(11, 67)
+    return fig
 
-    out = REPO_ROOT / "docs" / "workflow.png"
-    out.parent.mkdir(exist_ok=True)
-    fig.savefig(out, bbox_inches="tight")
-    print(f"wrote {out}")
+
+def draw_prefire() -> "plt.Figure":
+    fig, ax = plt.subplots(figsize=(12.0, 6.2))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 60)
+    ax.axis("off")
+
+    ax.text(50, 59.4, "PREFIRE brightness-temperature simulation & Jacobians",
+            ha="center", va="top", fontsize=12, fontweight="bold")
+
+    # sources --------------------------------------------------------------
+    s1 = box(ax, 1, 44, 15, 7, "NASA ASDC\nPREFIRE SAT1/2\n1B-RAD (R01)", C_EXT)
+    s2 = box(ax, 1, 33, 15, 7, "Zenodo\nTIRS SRF v13\n(BT lookup + NEdR)", C_EXT)
+    s3 = box(ax, 1, 20, 15, 7, "data/YYYY/MM/DD/\nERA5 columns\n(main pipeline)", C_DATA)
+
+    # data ------------------------------------------------------------------
+    d1 = box(ax, 21.5, 38.5, 16, 7.5, "data/prefire/\nYYYY/MM/ granules + srf/\nvia era5_prefire_download.py", C_DATA)
+    arrow(ax, s1, d1)
+    arrow(ax, s2, d1)
+
+    # era5_prefire_bt.py subcommand stack -----------------------------------
+    p1 = box(ax, 43, 44, 17, 8, "collocate\nfootprints $\\rightarrow$ (cell, hour)\ncolumns; pick clear +\novercast test set", C_PROC)
+    p2 = box(ax, 43, 33.5, 17, 7, "prep\natm + cloud files,\nper-scene obs BT manifest", C_PROC)
+    p3 = box(ax, 43, 23, 17, 7, "run\nuvspec thermal radiance,\nSRF $\\rightarrow$ channel BT", C_PROC)
+    p4 = box(ax, 43, 12, 17, 7.5, "jacobian\nperturb skt, T(z), q(z),\ncloud, emissivity", C_PROC)
+    ax.text(51.5, 53.6, "era5_prefire_bt.py", ha="center", fontsize=7.4,
+            fontweight="bold", style="italic", color="#333333")
+    arrow(ax, d1, p1)
+    elbow(ax, [(16, 23.5), (40.5, 23.5), (40.5, 48), (43, 48)])
+    varrow(ax, p1, p2)
+    varrow(ax, p2, p3)
+    varrow(ax, p3, p4)
+
+    # cross-check + outputs --------------------------------------------------
+    r1 = box(ax, 66, 34, 15, 6.5, "rrtmg\n16-band flux-equiv.\nBT cross-check", C_PROC)
+    o1 = box(ax, 66, 23.5, 15, 6.5, "results JSON\nchannel BT + spectra\n(sim vs obs)", C_DATA)
+    o2 = box(ax, 66, 12, 15, 6.5, "jacobian_*.nc\nK matrices per column\n(+ NEdR for S$_e$)", C_DATA)
+    arrow(ax, p2, r1)
+    varrow(ax, r1, o1)
+    arrow(ax, p3, o1)
+    arrow(ax, p4, o2)
+
+    f1 = box(ax, 86, 18, 13, 12, "figure\nBT spectra vs obs,\nK heatmaps\n$\\rightarrow$ figures/\nprefire_*.png", C_FIG)
+    arrow(ax, o1, f1)
+    arrow(ax, o2, f1)
+
+    # planned follow-on ------------------------------------------------------
+    fut = box(ax, 86, 5, 13, 8, "planned:\ncloud-property\nretrieval (OE) +\nEarthCARE validation", C_EXT, ls="--", ec="#999999")
+    arrow(ax, o2, fut, ls="--")
+
+    legend_row(ax, 2.5, ((1, C_EXT, "external service"),
+                         (17, C_DATA, "local data"),
+                         (31, C_PROC, "pipeline script"),
+                         (46, C_FIG, "figure output")))
+    ax.text(1, 7.0, "collocate/prep run on the ERA5 side; run/jacobian are "
+            "libRadtran jobs (fine spectral grid on the cluster).",
+            fontsize=6.6, color="#555555")
+    ax.set_ylim(1.5, 60)
+    return fig
+
+
+def main() -> int:
+    apply_agu_style()
+    out_dir = REPO_ROOT / "docs"
+    out_dir.mkdir(exist_ok=True)
+    for fname, draw in (("workflow.png", draw_main),
+                        ("workflow_prefire.png", draw_prefire)):
+        fig = draw()
+        out = out_dir / fname
+        fig.savefig(out, bbox_inches="tight")
+        print(f"wrote {out}")
     return 0
 
 

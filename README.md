@@ -237,7 +237,10 @@ Mac (reptran coarse, 4 streams); jobs parallelize across `--workers`.
 Cloudy caveats: plane-parallel overcast assumption (pixels are screened for
 cloud fraction ≥ 0.99), fixed effective radii (ERA5 diagnoses its own
 internally), and ERA5's cloud overlap scheme — expect larger spread than
-clear-sky, especially for optically thin clouds.
+clear-sky, especially for optically thin clouds. The fixed radii matter most
+exactly there: LW absorption scales ~1/r_eff, so thin clouds (τ ~ 1) shift
+by up to ~20 W/m² across plausible radii while emissivity-saturated thick
+clouds (liquid LWP ≳ 30–40 g/m²) are insensitive (< 0.1 W/m²).
 
 Setup: surface emission from ERA5 `skt` (uvspec `sur_temperature`) with
 emissivity 0.99; ERA5 T/q/O3 profiles + CAMS CO2/CH4 (or
@@ -353,6 +356,78 @@ RRTMG r = 0.70 vs ERA5's own product r = 0.67 (all ~ +10 W/m² high, rmse
 24 W/m²) — the offline simulations track the radiometer slightly better
 than ERA5's flux product, and the shared overestimate points at ERA5's
 cloud state along the drift, not radiative transfer.
+
+## PREFIRE brightness-temperature simulation + Jacobians (stage 8)
+
+![PREFIRE workflow](docs/workflow_prefire.png)
+
+`src/era5_prefire_download.py` (era5 env) fetches PREFIRE TIRS L1B spectral
+radiance granules (`PREFIRE_SATx_1B-RAD` R01, NASA ASDC via `earthaccess`;
+Earthdata login in `~/.netrc`) and the TIRS spectral-response files (v13,
+Zenodo record 16638853 — the version the R01 calibration used). PREFIRE
+observes to ~83.8°N, so the overlap with the 80–90°N domain is the
+80–83.8°N band; viewing zenith angles are 5–16°, and each of the 8
+cross-track scenes has its own wavelength registration.
+
+`src/era5_prefire_bt.py` runs the stage:
+
+```
+conda activate era5     && python src/era5_prefire_bt.py collocate --year 2025 --month 1 --sat 1
+conda activate era5     && python src/era5_prefire_bt.py prep      --year 2025 --month 1 --sat 1
+conda activate er3t_env && python src/era5_prefire_bt.py run       --year 2025 --month 1 --sat 1
+conda activate era5     && python src/era5_prefire_bt.py rrtmg     --year 2025 --month 1 --sat 1
+conda activate er3t_env && python src/era5_prefire_bt.py jacobian  --year 2025 --month 1 --sat 1 --simulator lrt
+conda activate era5     && python src/era5_prefire_bt.py figure    --year 2025 --month 1 --sat 1
+```
+
+- **collocate** maps every good-quality footprint to its ERA5 0.25° cell and
+  nearest analysis hour (≤ 3 h offset — the same state-time caveat as stage
+  7) and picks a test set of clear and single-class overcast columns;
+  partially cloudy columns are excluded because BT does not blend linearly
+  across a broken scene.
+- **run** simulates one thermal-source spectral radiance per column with
+  libRadtran at the footprint viewing angle (`mie` liquid / `yang2013` ice —
+  radiance-grade optics, unlike the flux-oriented Hu & Stamnes / Fu of stage
+  7), convolves with the scene's SRF and inverts the SRF file's own
+  blackbody channel-radiance lookup, so simulated and observed BT share one
+  radiometric scale. uvspec's thermal band output is radiance per
+  wavenumber; the reader converts accordingly (verified against the Planck
+  curve).
+- **rrtmg** is a 16-band sanity check: `climlab` RRTMG-LW spectral OLR
+  converted to flux-equivalent band BT. It agrees with band-aggregated
+  libRadtran to ±1–2 K (flux-equivalent vs nadir-radiance BT differ by
+  limb darkening, so this is a consistency check, not validation).
+- **jacobian** builds finite-difference K matrices around each column's
+  actual sky state: skt and per-level T (+1 K), per-level q (+5 %),
+  ln LWP/IWP (+10 %), r_eff (+1 µm), cloud-top (one layer up), emissivity
+  (−0.01). `--simulator rrtmg` sweeps all states in ~2 s/column (structure
+  prototyping); `--simulator lrt` gives the channel-resolved K for the
+  planned cloud-property retrieval (future validation target: collocated
+  EarthCARE cloud products, which need an ESA EO account).
+
+A `cotscan` subcommand (er3t_env) reproduces the ARCSIX-style
+BT-vs-cloud-optical-thickness sensitivity figure with PREFIRE channels: a
+synthetic single-layer cloud (`--phase/--cer/--cth/--cbh`) is inserted into
+one collocated column, its 550-nm optical thickness swept on a log grid via
+`ic_modify tau set`, and each state is one spectral run convolved to channel
+BT — panels show BT(τ), dBT/dτ and dBT/dr_eff
+(`figures/prefire_cotscan_*.png`).
+
+**Resolution note:** `reptran fine` must NOT run on a laptop — parallel
+fine-grid workers exhaust memory (this has crashed a machine); the CLI
+refuses fine/medium on Darwin and defaults to `coarse` locally. Production
+fine-grid runs belong on CURC (`slurm/curc_prefire_bt.sh`). The local coarse
+grid (~15 cm⁻¹) under-resolves far-IR channels whose widths shrink to
+~3–9 cm⁻¹, so science numbers should come from the fine run.
+
+First results (2025-01-01, SAT1, coarse, 3 clear + 3 overcast columns):
+clear-sky sim − obs ≈ **+5 K** in window and far-IR channels — consistent
+in direction with the +11.5 W/m² warm-skin LW↑ bias found along the MOSAiC
+drift; overcast columns scatter −15…+2 K (ERA5 cloud placement). Clear-sky
+Jacobians close (ΣK_T + K_skt ≈ 1), K_skt falls from ~0.98 (11 µm window)
+to 0.08 (26.5 µm) across the far-IR dirty window, and opaque ice cloud
+gives ∂BT/∂lnIWP ≈ −7 K per 100 % IWP with the surface fully masked
+(K_skt = 0) — the expected information content for a retrieval.
 
 ## Notes on surface fluxes
 
