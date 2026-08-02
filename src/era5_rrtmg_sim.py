@@ -124,6 +124,10 @@ def run_pixel(prof: dict, manifest: dict, climlab, Axis) -> dict:
     ciwp = cloud_layer_paths(prof["ic_file"], z) if prof.get("ic_file") \
         else np.zeros(p.size - 1)
     if (clwp + ciwp).any():
+        # reff from the manifest (fixed values; see era5_lrt_sim.py). Mind
+        # that changing effective radius moves LWdn by up to ~20 W/m2 for
+        # optically thin clouds but has almost no effect on thick,
+        # emissivity-saturated ones (absorption ~ 1/reff until tau >> 1).
         reff = manifest["reff_um"]
         kwargs = {
             "icld": 1, "inflglw": 2, "liqflglw": 1, "iceflglw": 3,

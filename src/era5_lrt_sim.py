@@ -53,7 +53,12 @@ WVL_RANGE_NM = (3080.0, 100000.0)
 CO2_CONST_PPM = 415.0
 CH4_CONST_PPM = 1.9
 # effective radii for cloudy runs (not in ERA5 pressure-level output; ERA5's
-# radiation diagnoses them internally — a documented uncertainty of the setup)
+# radiation diagnoses them internally — a documented uncertainty of the setup).
+# Sensitivity note: LW mass absorption scales ~1/reff, so these choices matter
+# most for OPTICALLY THIN clouds (tau ~ 1: up to ~20 W/m2 LWdn across
+# plausible radii) and not at all once emissivity saturates (liquid
+# LWP >~ 30-40 g/m2: < 0.1 W/m2); ice stays sensitive to larger IWP because
+# crystals are bigger.
 REFF_LIQ_UM = 10.0
 REFF_ICE_UM = 25.0
 R_DRY = 287.04            # J kg-1 K-1
