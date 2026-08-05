@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reanlib.config import REPO_ROOT, figures_dir, inversion_path, load_config, pairs_path, plev_path, sfc_path
 from reanlib.inversion import column_heights
 from reanlib.io_era5 import open_era5
+from reanlib.fluxes import load_surface_lw
 from lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM, SIGMA,
                          WVL_RANGE_NM, build_profile_files, load_cams_profiles,
                          write_cloud_file)
@@ -170,8 +171,9 @@ def cmd_prep(args) -> int:
                                 "dz_m": float(ob["inv_dz"][j]),
                                 "t_k": float(ob["inv_t"][j]) + 273.15,
                                 "dt_k": float(ob["inv_dt"][j])})
-        strd = float(s5["strd"].values[iy, ix]) / 3600.0
-        str_net = float(s5["str"].values[iy, ix]) / 3600.0
+        lwdn2d, lwup2d, _ = load_surface_lw(cfg, None, None, s5)
+        strd = float(lwdn2d[iy, ix])
+        lwup_ref = float(lwup2d[iy, ix])
         cases.append({
             "label": label,
             "sounding_time": st.isoformat(), "era5_time": et.isoformat(),
@@ -181,7 +183,7 @@ def cmd_prep(args) -> int:
             "match_km": float(pairs["match_km"][k]),
             "match_dt_h": float(pairs["match_dt_h"][k]),
             "skt": skt, "t2m": t2m, "sp_hpa": sp_hpa,
-            "era5_lwdn": strd, "era5_lwup": strd - str_net,
+            "era5_lwdn": strd, "era5_lwup": lwup_ref,
             "cc_max": float(pick.cc_max), "lwp_g": float(pick.lwp),
             "iwp_g": float(pick.iwp),
             "profile": {kk: list(vv) for kk, vv in

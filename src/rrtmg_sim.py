@@ -37,8 +37,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from reanlib.config import load_config
-from lrt_sim import M_DRY, M_H2O, manifest_path, results_path
+from reanlib.config import load_config, source_label
+from lrt_sim import M_DRY, M_H2O, REF_KEY_COMPAT, manifest_path, results_path
 
 N2O_PPM = 0.32          # libRadtran default profile is ~this near the surface
 DGE_FROM_REFF = 1.0315  # Fu 1996 generalized effective size from reff
@@ -158,6 +158,8 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--day", type=int, required=True)
     parser.add_argument("--hour", type=int, required=True)
     parser.add_argument("--sky", default="clear", choices=["clear", "cloudy"])
+    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+                        help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     args = parser.parse_args(argv)
 
@@ -171,7 +173,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     patch_interface_temperature()
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     date = dt.date(args.year, args.month, args.day)
     mpath = manifest_path(cfg, date, args.hour, args.sky)
     if not mpath.exists():
@@ -179,6 +181,10 @@ def main(argv: "list[str] | None" = None) -> int:
                  f"(with --sky {args.sky})")
     manifest = json.loads(mpath.read_text())
     profiles = manifest["profiles"]
+    for p in profiles:      # pre-rename manifests used era5_lw* keys
+        for old, new in REF_KEY_COMPAT.items():
+            if old in p:
+                p[new] = p.pop(old)
     simulator = f"rrtmg-lw (climlab {climlab.__version__})"
 
     print(f"RRTMG-LW on {len(profiles)} {manifest.get('sky', 'clear')}-sky "
@@ -198,11 +204,11 @@ def main(argv: "list[str] | None" = None) -> int:
                   f"({(time.time() - t0) / (k + 1) * 1000.0:.0f} ms/column) ...")
 
     new = pd.DataFrame(rows)
-    era5_dn = np.array([p["era5_lwdn"] for p in profiles])
-    era5_up = np.array([p["era5_lwup"] for p in profiles])
-    print(f"done in {time.time() - t0:.1f} s — RRTMG bias vs ERA5: "
-          f"LWdn {(new['sim_lwdn_sfc'] - era5_dn).mean():+.2f}, "
-          f"LWup {(new['sim_lwup_sfc'] - era5_up).mean():+.2f} W/m2")
+    ref_dn = np.array([p["ref_lwdn"] for p in profiles])
+    ref_up = np.array([p["ref_lwup"] for p in profiles])
+    print(f"done in {time.time() - t0:.1f} s — RRTMG bias vs {source_label(cfg)}: "
+          f"LWdn {(new['sim_lwdn_sfc'] - ref_dn).mean():+.2f}, "
+          f"LWup {(new['sim_lwup_sfc'] - ref_up).mean():+.2f} W/m2")
 
     rpath = results_path(cfg, date, args.hour, args.sky)
     if rpath.exists():

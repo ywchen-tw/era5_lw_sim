@@ -48,9 +48,12 @@ merra2:
   collections:
     plev: M2I3NPASM   # inst3_3d_asm_Np: 3-hourly INSTANTANEOUS, 42 pressure levels
     sfc: M2I1NXASM    # inst1_2d_asm_Nx: hourly INSTANTANEOUS single-level
+    rad: M2T1NXRAD    # tavg1_2d_rad_Nx: 1-h time-averaged W/m2, stamped HH:30
   version: "5.12.4"
   plev_variables: [T, QV, O3, QL, QI]   # -> t, q, o3, clwc, ciwc
   sfc_variables: [T2M, TS, PS]          # -> t2m, skt, sp
+  # Surface radiation for stage 7 (LWdn = LWGAB/EMIS; LWup = LWGEM + refl.)
+  rad_variables: [LWGAB, LWGEM, LWGABCLR, EMIS, CLDTOT]
   # Hours must be multiples of 3 (the M2I3NPASM cadence).
   default_hours: [0, 6, 12, 18]
 

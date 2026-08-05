@@ -70,14 +70,23 @@ the README. Update this file when a stage lands or a plan changes.
 
 ## Backlog / ideas
 
-- [ ] **MERRA-2 stage 7 (LW fluxes)** — radiation from `M2T1NXRAD`
-      (time-averaged W/m², stamped HH:30 — no `/3600`; `LWGEM` gives LW↑
-      directly, no `strd − str` differencing). First refactor the three
-      duplicated conversion sites (`lrt_sim.py` `cmd_prep`,
-      `mosaic_flux.py`, `case_study.py` — `strd/3600`, `strd − str_net`)
-      into one source-dispatching `surface_lw_fluxes()` helper. 3-D cloud
-      fraction only exists time-averaged (`M2T3NPCLD`, stamps 01:30/04:30/…)
-      — new state-time semantics; the stage-7c framing changes shape
+- [x] **MERRA-2 stage 7, clear-sky** — `lrt_sim.py`/`rrtmg_sim.py --source
+      merra2`; `M2T1NXRAD` fetched as the `rad` dataset (1-h means stamped
+      HH:30; the two windows bracketing the instant are averaged;
+      LW↓ = LWGAB/EMIS, LW↑ = LWGEM + (1−EMIS)·LW↓). The three duplicated
+      flux-conversion sites now go through
+      `reanlib/fluxes.load_surface_lw()`; manifest keys renamed
+      `era5_lw*` → `ref_lw*` (readers accept both).
+- [ ] **MERRA-2 clear-sky LW↓ offset** — first run (2020-01-01 12Z, 5
+      pixels): sim ≈ +6–7 W/m² above MERRA-2's flux (libRadtran and RRTMG
+      agree; LWGABCLR ≈ all-sky there, so not cloud). Candidates: GEOS
+      Chou–Suarez LW scheme vs RRTMG-family physics, IAU
+      analysis-vs-trajectory state (ERA5 stage-7c analogue; MERRA-2 plev is
+      3-hourly, so the 11Z trick becomes 09/12/15Z), and the 42-level
+      pressure-level truncation of the model state. LW↑ closes to −0.7 W/m².
+- [ ] **MERRA-2 stage 7 cloudy** — needs 3-D cloud fraction, which only
+      exists time-averaged (`M2T3NPCLD`, stamps 01:30/04:30/…) — new
+      state-time semantics; the stage-7c framing changes shape
       (instantaneous state at HH vs mean flux centered HH:30).
 - [ ] **MERRA-2 stage 8 (PREFIRE)** — generalize the hard-coded 6-h snap in
       `prefire_bt.py` collocation to the source cadence; MERRA-2's 3-hourly

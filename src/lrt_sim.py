@@ -1,22 +1,26 @@
 #!/usr/bin/env python
-"""Broadband LW (thermal) flux simulation from ERA5 profiles via libRadtran/er3t.
+"""Broadband LW (thermal) flux simulation from reanalysis profiles via libRadtran/er3t.
 
 Run under the ``er3t_env`` conda env (needs er3t + libRadtran; see README).
-Three subcommands, all operating on one time snapshot:
+Works from ERA5 (default) or MERRA-2 (--source merra2, clear-sky only — the
+instantaneous MERRA-2 plev collection has no 3-D cloud fraction). Three
+subcommands, all operating on one time snapshot:
 
   prep     select N cloud-free pixels spanning the SBI-strength range, build
-           libRadtran atmosphere/CH4 profile files from ERA5 (+ CAMS EGG4
-           CO2/CH4), write a manifest with the matching ERA5 fluxes
+           libRadtran atmosphere/CH4 profile files from the reanalysis
+           (+ CAMS EGG4 CO2/CH4), write a manifest with the matching
+           reference fluxes (reanlib/fluxes.load_surface_lw)
   run      run uvspec (source thermal, integrated 4-100 um flux) per profile
-  compare  table + figure of simulated vs ERA5 surface LW fluxes; becomes a
-           three-way comparison when rrtmg_sim.py (run under the era5
-           env) has added RRTMG-LW rows to the results CSV
+  compare  table + figure of simulated vs reference surface LW fluxes;
+           becomes a three-way comparison when rrtmg_sim.py (run under the
+           era5 env) has added RRTMG-LW rows to the results CSV
 
-Physics choices (see plan/README): surface emission from ERA5 skin temperature
-(uvspec ``sur_temperature``) with emissivity 0.99; ERA5 LWdn = strd/3600 and
-LWup = (strd-str)/3600 (1-h accumulations, W m-2); simulated range 4-100 um vs
-ERA5's RRTMG-LW 3.08-1000 um — the missing far-IR tail (~1% of sigma*T^4 at
-Arctic winter temperatures) is estimated analytically in ``compare``.
+Physics choices (see plan/README): surface emission from the reanalysis skin
+temperature (uvspec ``sur_temperature``) with emissivity 0.99; reference
+fluxes are 1-h means (ERA5: strd/3600, LWup = (strd-str)/3600; MERRA-2:
+M2T1NXRAD windows bracketing the instant); simulated range 3.08-100 um vs the
+reference broadband 3.08-1000 um — the missing far-IR tail (~1% of sigma*T^4
+at Arctic winter temperatures) is estimated analytically in ``compare``.
 
 Examples:
     python src/lrt_sim.py prep    --year 2020 --month 1 --day 1 --hour 12
@@ -37,7 +41,9 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from reanlib.config import REPO_ROOT, figures_dir, inversion_path, load_config, plev_path, sfc_path
+from reanlib.config import (REPO_ROOT, figures_dir, inversion_path, load_config,
+                            plev_path, sfc_path, source_label)
+from reanlib.fluxes import load_surface_lw
 from reanlib.inversion import column_heights
 from reanlib.io_era5 import open_era5
 
@@ -251,8 +257,13 @@ def build_profile_files(out_dir: Path, label: str, p_hpa, T, q, o3_mmr,
     return str(atm_file), str(ch4_file), keep, z_km
 
 
+# manifests/results written before the multi-source change used era5_lw* keys
+REF_KEY_COMPAT = {"era5_lwdn": "ref_lwdn", "era5_lwup": "ref_lwup"}
+
+
 def cmd_prep(args) -> int:
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
+    lab = source_label(cfg)
     date = dt.date(args.year, args.month, args.day)
     when = np.datetime64(f"{date:%Y-%m-%d}T{args.hour:02d}:00")
 
@@ -261,19 +272,27 @@ def cmd_prep(args) -> int:
         sfc = open_era5(sfc_path(cfg, date)).sel(valid_time=when)
         inv = open_era5(inversion_path(cfg, date)).sel(valid_time=when)
     except KeyError:
-        sys.exit(f"{when} missing from the ERA5/inversion files — download it "
-                 f"(era5_download.py --hours {args.hour}) and recompute the "
+        dl = "era5_download.py" if cfg["source"] == "era5" else "merra2_download.py"
+        sys.exit(f"{when} missing from the {lab}/inversion files — download it "
+                 f"({dl} --hours {args.hour}) and recompute the "
                  f"day's inversions (daily_inversion.py --overwrite) first")
     plev = plev.transpose("pressure_level", "latitude", "longitude")
 
     p = plev["pressure_level"].values.astype(float)          # descending
     sp_hpa = sfc["sp"].values / 100.0
 
-    # column condensate paths and cloud-fraction maximum
-    cc_max = plev["cc"].max("pressure_level").values
+    # column condensate paths and cloud-fraction maximum (MERRA-2's
+    # instantaneous plev collection has no cloud fraction — condensate only)
+    has_cc = "cc" in plev
+    cc_max = (plev["cc"].max("pressure_level").values if has_cc
+              else np.full(sp_hpa.shape, np.nan))
+    # nan_to_num: MERRA-2 masks below-ground/marginal levels (no condensate there)
     p_pa_asc = p[::-1] * 100.0
-    lwp_g = TRAPZ(plev["clwc"].values[::-1], x=p_pa_asc, axis=0) / G0 * 1000.0
-    iwp_g = TRAPZ(plev["ciwc"].values[::-1], x=p_pa_asc, axis=0) / G0 * 1000.0
+    lwp_g = np.nan_to_num(TRAPZ(np.nan_to_num(plev["clwc"].values[::-1]),
+                                x=p_pa_asc, axis=0)) / G0 * 1000.0
+    iwp_g = np.nan_to_num(TRAPZ(np.nan_to_num(plev["ciwc"].values[::-1]),
+                                x=p_pa_asc, axis=0)) / G0 * 1000.0
+    t_finite = np.isfinite(plev["t"].values)     # (nlev, nlat, nlon)
 
     strength = np.nan_to_num(inv["sbi_strength"].values)
     found = inv["sbi_found"].values.astype(bool)
@@ -295,7 +314,9 @@ def cmd_prep(args) -> int:
               f"(snapshot {ref['snapshot']})")
     elif args.sky == "clear":
         # no cloud fraction, negligible condensate path, full column
-        clear = ((cc_max <= 0.01) & (lwp_g + iwp_g <= 1.0) & (sp_hpa >= 1000.0))
+        # (without cc, screen on condensate alone with a tighter threshold)
+        clear = (((cc_max <= 0.01) & (lwp_g + iwp_g <= 1.0)) if has_cc
+                 else (lwp_g + iwp_g <= 0.01)) & (sp_hpa >= 1000.0)
         print(f"clear-sky pixels: {clear.sum()} / {clear.size} "
               f"({clear.mean():.1%} of the domain)")
         if clear.sum() < args.n:
@@ -327,7 +348,12 @@ def cmd_prep(args) -> int:
             picks = picks[:args.n]
     else:
         # cloudy: near-overcast columns so the plane-parallel (cloud fraction 1)
-        # simulation matches ERA5's all-sky flux as closely as possible
+        # simulation matches the all-sky flux as closely as possible
+        if not has_cc:
+            sys.exit("--sky cloudy needs 3-D cloud fraction, which MERRA-2's "
+                     "instantaneous plev collection lacks (only time-averaged "
+                     "M2T3NPCLD has it) — MERRA-2 stage 7 is clear-sky only "
+                     "for now")
         overcast = (cc_max >= 0.99) & (sp_hpa >= 1000.0) & (lwp_g + iwp_g > 1.0)
         print(f"overcast pixels: {overcast.sum()} / {overcast.size} "
               f"({overcast.mean():.1%} of the domain)")
@@ -335,6 +361,8 @@ def cmd_prep(args) -> int:
             sys.exit("not enough overcast pixels — relax thresholds")
         picks = (sample_pixels(overcast, args.n, args.seed) if args.n > 5
                  else pick_cloudy_pixels(overcast, lwp_g, iwp_g, args.n))
+
+    ref_dn2d, ref_up2d, flux_note = load_surface_lw(cfg, date, when, sfc)
 
     out_dir = lw_sim_dir(cfg, date)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -347,7 +375,9 @@ def cmd_prep(args) -> int:
     for label, (iy, ix) in picks:
         # hour-tagged file label so snapshots of the same day never collide
         flabel = f"{label}_T{args.hour:02d}Z"
-        above = p <= sp_hpa[iy, ix]
+        # above ground AND finite (MERRA-2 masks marginal near-surface levels
+        # even where sp >= 1000 hPa; the profile then starts one level higher)
+        above = (p <= sp_hpa[iy, ix]) & t_finite[:, iy, ix]
         skt = float(sfc["skt"].values[iy, ix])
         t2m = float(sfc["t2m"].values[iy, ix])
         p_col = p[above]
@@ -357,15 +387,15 @@ def cmd_prep(args) -> int:
             plev["q"].values[above, iy, ix].astype(float),
             plev["o3"].values[above, iy, ix].astype(float),
             t2m, float(sp_hpa[iy, ix]), cams)
-        strd = float(sfc["strd"].values[iy, ix]) / 3600.0
-        str_net = float(sfc["str"].values[iy, ix]) / 3600.0
+        ref_dn = float(ref_dn2d[iy, ix])
+        ref_up = float(ref_up2d[iy, ix])
         prof = {
             "label": label,
             "lat": float(lat2d[iy, ix]), "lon": float(lon2d[iy, ix]),
             "sbi_strength": float(strength[iy, ix]),
             "sbi_found": int(found[iy, ix]),
             "skt": skt, "t2m": t2m,
-            "era5_lwdn": strd, "era5_lwup": strd - str_net,
+            "ref_lwdn": ref_dn, "ref_lwup": ref_up,
             "cc_max": float(cc_max[iy, ix]),
             "lwp_g": float(lwp_g[iy, ix]), "iwp_g": float(iwp_g[iy, ix]),
             "atm_file": atm_file, "ch4_file": ch4_file,
@@ -386,13 +416,15 @@ def cmd_prep(args) -> int:
         if len(picks) <= 12:
             print(f"  {label:<10} ({lat2d[iy, ix]:.2f}N, {lon2d[iy, ix]:.2f}E)  "
                   f"SBI {strength[iy, ix]:5.2f} K  skt {skt:6.2f} K  "
-                  f"ERA5 LWdn {strd:6.1f}  LWup {strd - str_net:6.1f} W/m2"
+                  f"{lab} LWdn {ref_dn:6.1f}  LWup {ref_up:6.1f} W/m2"
                   + cloud_note)
         elif len(profiles) % 100 == 0:
             print(f"  prepared {len(profiles)}/{len(picks)} profiles ...")
 
     manifest = {
         "snapshot": f"{date:%Y-%m-%d}T{args.hour:02d}:00Z",
+        "source": cfg["source"],
+        "flux_reference": flux_note,
         "sky": args.sky,
         "pixels_from": str(args.pixels_from) if args.pixels_from else None,
         "emissivity": EMISSIVITY,
@@ -400,9 +432,10 @@ def cmd_prep(args) -> int:
         "reff_um": {"liquid": REFF_LIQ_UM, "ice": REFF_ICE_UM},
         "gas_source": cams["source"] if cams else
                       f"constants: CO2 {CO2_CONST_PPM} ppm, CH4 {CH4_CONST_PPM} ppm",
-        "notes": ("ERA5 fluxes are 1-h accumulations ending at the snapshot time; "
-                  "sim range vs ERA5 RRTMG-LW 3.08-1000 um; cloudy runs assume "
-                  "overcast plane-parallel clouds with fixed effective radii"),
+        "notes": (f"reference fluxes are 1-h means ({flux_note}); "
+                  "sim range vs the reference broadband 3.08-1000 um; cloudy "
+                  "runs assume overcast plane-parallel clouds with fixed "
+                  "effective radii"),
         "profiles": profiles,
     }
     mpath = manifest_path(cfg, date, args.hour, args.sky)
@@ -417,7 +450,7 @@ def cmd_run(args) -> int:
     import copy
     import er3t
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     date = dt.date(args.year, args.month, args.day)
     mpath = manifest_path(cfg, date, args.hour, args.sky)
     if not mpath.exists():
@@ -461,7 +494,7 @@ def cmd_run(args) -> int:
         if prof.get("ic_file"):
             input_dict_extra["ic_file 1D"] = prof["ic_file"]
             input_dict_extra["ic_properties"] = "fu interpolate"
-        init = er3t.rtm.lrt.lrt_init_mono_flx(
+        init_kwargs = dict(
             input_file=in_path,
             output_file=out_path,
             date=dt.datetime(args.year, args.month, args.day, args.hour),
@@ -474,6 +507,12 @@ def cmd_run(args) -> int:
             cld_cfg=None,
             aer_cfg=None,
         )
+        # er3t versions differ in accepted kwargs (e.g. Nx was removed)
+        import inspect
+        accepted = inspect.signature(
+            er3t.rtm.lrt.lrt_init_mono_flx.__init__).parameters
+        init = er3t.rtm.lrt.lrt_init_mono_flx(
+            **{k: v for k, v in init_kwargs.items() if k in accepted})
         inits.append((label, init))
         if args.overwrite or not (os.path.exists(out_path)
                                   and os.path.getsize(out_path) > 50):
@@ -541,12 +580,14 @@ def cmd_compare(args) -> int:
 
     from reanlib.plotstyle import apply_agu_style, panel_label
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     date = dt.date(args.year, args.month, args.day)
+    lab = source_label(cfg)
     manifest = json.loads(manifest_path(cfg, date, args.hour, args.sky).read_text())
     res = pd.read_csv(results_path(cfg, date, args.hour, args.sky))
     sims = res["simulator"].astype(str)
-    prof = pd.DataFrame(manifest["profiles"])
+    prof = pd.DataFrame(manifest["profiles"]).rename(
+        columns=REF_KEY_COMPAT)   # pre-rename manifests used era5_lw* keys
     df = prof.merge(res[sims.str.startswith("libradtran")], on="label") \
              .sort_values("sbi_strength", ascending=False)
     rrt = res[sims.str.startswith("rrtmg")]     # rrtmg_sim.py cross-check
@@ -562,34 +603,35 @@ def cmd_compare(args) -> int:
     w1, w2 = np.array(manifest["wavelength_range_nm"]) / 1000.0
     df["tail_up"] = [(1 - planck_band_fraction(t, w1, w2)) * SIGMA * t**4
                      * manifest["emissivity"] for t in df["skt"]]
-    t_eff_dn = (df["era5_lwdn"] / SIGMA) ** 0.25
+    t_eff_dn = (df["ref_lwdn"] / SIGMA) ** 0.25
     df["tail_dn"] = [(1 - planck_band_fraction(t, w1, w2)) * SIGMA * t**4
                      for t in t_eff_dn]
 
     if len(df) > 12:
         return compare_stats(cfg, args, manifest, df, w1, w2)
 
-    print(f"\nERA5 vs libRadtran {manifest.get('sky', 'clear')}-sky LW fluxes — "
+    print(f"\n{lab} vs libRadtran {manifest.get('sky', 'clear')}-sky LW fluxes — "
           f"{manifest['snapshot']}"
           f"  (emissivity {manifest['emissivity']}, {w1:.0f}-{w2:.0f} um)")
+    ref_hdr = lab[:7]
     print(f"{'label':<10}{'SBI(K)':>7}{'skt(K)':>8} | "
-          f"{'LWdn sim':>9}{'ERA5':>7}{'bias':>7}{'tail~':>6} | "
-          f"{'LWup sim':>9}{'ERA5':>7}{'bias':>7}{'tail~':>6}"
+          f"{'LWdn sim':>9}{ref_hdr:>8}{'bias':>7}{'tail~':>6} | "
+          f"{'LWup sim':>9}{ref_hdr:>8}{'bias':>7}{'tail~':>6}"
           + (f" | {'RRTMGdn':>8}{'RRTMGup':>8}" if has_rrtmg else ""))
     for _, r in df.iterrows():
         print(f"{r['label']:<10}{r['sbi_strength']:>7.2f}{r['skt']:>8.2f} | "
-              f"{r['sim_lwdn_sfc']:>9.1f}{r['era5_lwdn']:>7.1f}"
-              f"{r['sim_lwdn_sfc'] - r['era5_lwdn']:>+7.1f}{r['tail_dn']:>6.1f} | "
-              f"{r['sim_lwup_sfc']:>9.1f}{r['era5_lwup']:>7.1f}"
-              f"{r['sim_lwup_sfc'] - r['era5_lwup']:>+7.1f}{r['tail_up']:>6.1f}"
+              f"{r['sim_lwdn_sfc']:>9.1f}{r['ref_lwdn']:>8.1f}"
+              f"{r['sim_lwdn_sfc'] - r['ref_lwdn']:>+7.1f}{r['tail_dn']:>6.1f} | "
+              f"{r['sim_lwup_sfc']:>9.1f}{r['ref_lwup']:>8.1f}"
+              f"{r['sim_lwup_sfc'] - r['ref_lwup']:>+7.1f}{r['tail_up']:>6.1f}"
               + (f" | {r['rrtmg_lwdn_sfc']:>8.1f}{r['rrtmg_lwup_sfc']:>8.1f}"
                  if has_rrtmg else ""))
     print("tail~ = analytic estimate of flux outside the simulated range "
-          "(ERA5 includes it; expected sim low bias)\n")
+          f"({lab} includes it; expected sim low bias)\n")
 
     # surface blackbody estimate for LW up: emission + reflected downwelling
     eps = manifest["emissivity"]
-    df["bb_up"] = eps * SIGMA * df["skt"] ** 4 + (1.0 - eps) * df["era5_lwdn"]
+    df["bb_up"] = eps * SIGMA * df["skt"] ** 4 + (1.0 - eps) * df["ref_lwdn"]
 
     apply_agu_style()
     fig, axes = plt.subplots(1, 2, figsize=(10.6, 4.9), layout="constrained")
@@ -597,15 +639,15 @@ def cmd_compare(args) -> int:
     bb_label = ("$\\epsilon\\sigma T_{skin}^{4} + (1{-}\\epsilon)\\,"
                 "LW\\!\\downarrow$ (blackbody est.)")
     for ax, kind, letter in ((axes[0], "lwdn", "a"), (axes[1], "lwup", "b")):
-        era5 = df["era5_" + kind].values
+        ref = df["ref_" + kind].values
         sim = df["sim_" + kind + "_sfc"].values
         tail = df["tail_" + kind.replace("lw", "")].values
-        for xi, (e, s, t) in enumerate(zip(era5, sim, tail)):
+        for xi, (e, s, t) in enumerate(zip(ref, sim, tail)):
             ax.plot([xi, xi], [e, s], color="#bbbbbb", lw=1, zorder=1)
         if kind == "lwup":
             ax.plot(x, df["bb_up"].values, "D", ms=7, mfc="none",
                     mec="#555555", mew=1.2, label=bb_label, zorder=2)
-        ax.plot(x, era5, "o", ms=8, color="#0072B2", label="ERA5", zorder=3)
+        ax.plot(x, ref, "o", ms=8, color="#0072B2", label=lab, zorder=3)
         ax.plot(x, sim, "s", ms=7, color="#D55E00", label="libRadtran", zorder=3)
         ax.plot(x, sim + tail, "s", ms=7, mfc="none", mec="#D55E00", mew=1.2,
                 label="libRadtran + far-IR tail est.", zorder=3)
@@ -631,7 +673,7 @@ def cmd_compare(args) -> int:
         panel_label(ax, letter, x=-0.14, y=1.06)
     # one shared legend below the panels so it never overlaps data points
     handles, labels = axes[1].get_legend_handles_labels()
-    want = ["ERA5", "libRadtran", "libRadtran + far-IR tail est.",
+    want = [lab, "libRadtran", "libRadtran + far-IR tail est.",
             "RRTMG-LW (climlab)", bb_label]
     order = [labels.index(w) for w in want if w in labels]
     fig.legend([handles[i] for i in order], [labels[i] for i in order],
@@ -643,15 +685,15 @@ def cmd_compare(args) -> int:
         "$F_{band}(T) = \\int_{band} B_{\\lambda}(T)\\,d\\lambda \\; / \\;"
         "\\sigma T^{4}$\n"
         "$T = T_{skin},\\ \\epsilon{=}%.2f$ for LW$\\uparrow$;   "
-        "$T = (LW\\!\\downarrow_{ERA5}/\\sigma)^{1/4},\\ \\epsilon{=}1$ "
+        "$T = (LW\\!\\downarrow_{ref}/\\sigma)^{1/4},\\ \\epsilon{=}1$ "
         "for LW$\\downarrow$" % (w1, w2, eps))
     sky = manifest.get("sky", "clear")
     sims_txt = "libRadtran & RRTMG-LW" if has_rrtmg else "libRadtran"
     fig.suptitle(f"{sky.capitalize()}-sky broadband LW: {sims_txt} "
-                 f"(ERA5 profiles) vs ERA5 — {manifest['snapshot']}\n"
-                 f"$\\epsilon$={manifest['emissivity']}, sur_temperature = ERA5 skt; "
-                 f"sim {w1:.2f}–{w2:.0f} µm vs ERA5 3.08–1000 µm; "
-                 "ERA5 fluxes are 1-h means\n" + tail_eq, y=1.26)
+                 f"({lab} profiles) vs {lab} — {manifest['snapshot']}\n"
+                 f"$\\epsilon$={manifest['emissivity']}, sur_temperature = {lab} skt; "
+                 f"sim {w1:.2f}–{w2:.0f} µm vs {lab} 3.08–1000 µm; "
+                 f"{lab} fluxes are 1-h means\n" + tail_eq, y=1.26)
 
     outdir = figures_dir(cfg)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -675,15 +717,16 @@ def compare_stats(cfg, args, manifest, df, w1, w2):
 
     sky = manifest.get("sky", "clear")
     date = dt.date(args.year, args.month, args.day)
+    lab = source_label(cfg)
     has_rrtmg = ("rrtmg_lwdn_sfc" in df.columns
                  and df["rrtmg_lwdn_sfc"].notna().all())
-    print(f"\nERA5 vs simulated {sky}-sky LW statistics — {manifest['snapshot']}"
+    print(f"\n{lab} vs simulated {sky}-sky LW statistics — {manifest['snapshot']}"
           f"  (n = {len(df)}, emissivity {manifest['emissivity']}, "
           f"libRadtran {w1:.2f}-{w2:.0f} um"
           + (", RRTMG-LW 3.08-1000 um" if has_rrtmg else "") + ")")
     stats = {}
     for kind in ("lwdn", "lwup"):
-        e = df["era5_" + kind].values
+        e = df["ref_" + kind].values
         s = df["sim_" + kind + "_sfc"].values
         t = df["tail_" + kind.replace("lw", "")].values
         stats[kind] = (e, s, t)
@@ -735,7 +778,7 @@ def compare_stats(cfg, args, manifest, df, w1, w2):
                 fontsize=8 if has_rrtmg else 9,
                 bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="#cccccc"))
         arrow = "\\downarrow" if kind == "lwdn" else "\\uparrow"
-        ax.set_xlabel(f"ERA5 LW${arrow}$ (W m$^{{-2}}$)")
+        ax.set_xlabel(f"{lab} LW${arrow}$ (W m$^{{-2}}$)")
         ax.set_ylabel(("simulated" if has_rrtmg else "libRadtran")
                       + f" LW${arrow}$ (W m$^{{-2}}$)")
         ax.set_xlim(lim)
@@ -769,7 +812,7 @@ def compare_stats(cfg, args, manifest, df, w1, w2):
             g = df["rrtmg_" + kind + "_sfc"].values
             ax.scatter(xvals, g - e, s=9, color=c_rrt, alpha=0.35, marker="^",
                        edgecolors="none", label=lab + " RRTMG")
-    ax.set_ylabel("bias sim − ERA5 (W m$^{-2}$)")
+    ax.set_ylabel(f"bias sim − {lab} (W m$^{{-2}}$)")
     ax.legend(frameon=False, fontsize=8 if has_rrtmg else 9,
               ncol=2 if has_rrtmg else 1)
     ax.grid(color="#e3e3e3", lw=0.6)
@@ -833,6 +876,8 @@ def main(argv: "list[str] | None" = None) -> int:
     common.add_argument("--sky", default="clear", choices=["clear", "cloudy"],
                         help="clear: cloud-free pixels; cloudy: near-overcast "
                              "pixels with ERA5 clwc/ciwc as wc/ic cloud files")
+    common.add_argument("--source", choices=["era5", "merra2"], default=None,
+                        help="data source (default from config.yaml)")
     common.add_argument("--config", default=None)
 
     p_prep = sub.add_parser("prep", parents=[common],

@@ -51,6 +51,11 @@ otherwise the first data request is rejected.
 # MERRA-2 short name -> pipeline (ERA5-convention) name
 PLEV_RENAMES = {"T": "t", "QV": "q", "O3": "o3", "QL": "clwc", "QI": "ciwc"}
 SFC_RENAMES = {"T2M": "t2m", "TS": "skt", "PS": "sp"}
+# radiation keeps its MERRA-2 semantics (time-averaged W/m2, stamped HH:30);
+# ERA5 has no equivalent variables, so only the case is normalized
+RAD_RENAMES = {"LWGAB": "lwgab", "LWGEM": "lwgem", "LWGABCLR": "lwgabclr",
+               "EMIS": "emis", "CLDTOT": "cldtot"}
+KIND_RENAMES = {"plev": PLEV_RENAMES, "sfc": SFC_RENAMES, "rad": RAD_RENAMES}
 COORD_RENAMES = {"time": "valid_time", "lat": "latitude", "lon": "longitude",
                  "lev": "pressure_level"}
 
@@ -69,13 +74,13 @@ def require_earthdata_credentials() -> str:
 
 
 def normalize_merra2(ds: xr.Dataset, kind: str) -> xr.Dataset:
-    """Rename a MERRA-2 subset to pipeline conventions (kind: 'plev' or 'sfc').
+    """Rename a MERRA-2 subset to pipeline conventions (kind: plev/sfc/rad).
 
     Returns a dataset satisfying the same guarantees as io_era5.open_era5:
     time dim 'valid_time'; 'latitude' descending; vertical dim (plev only)
     'pressure_level' in hPa sorted descending (index 0 = 1000 hPa).
     """
-    var_renames = PLEV_RENAMES if kind == "plev" else SFC_RENAMES
+    var_renames = KIND_RENAMES[kind]
     missing = [v for v in var_renames if v not in ds]
     if missing:
         raise KeyError(f"MERRA-2 {kind} granule is missing variable(s) {missing}")

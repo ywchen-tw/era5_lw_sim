@@ -39,6 +39,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reanlib.config import REPO_ROOT, figures_dir, load_config, pairs_path, plev_path, sfc_path
 from reanlib.io_era5 import open_era5
+from reanlib.fluxes import load_surface_lw
 from lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM, SIGMA,
                           WVL_RANGE_NM, build_profile_files,
                           load_cams_profiles, write_cloud_file)
@@ -141,8 +142,9 @@ def cmd_prep(args) -> int:
 
         obs_dn = [float(mos["lwdn"].sel(time=st)) for st in sts]
         obs_up = [float(mos["lwup"].sel(time=st)) for st in sts]
-        strd = float(s5["strd"].values[iy, ix]) / 3600.0
-        str_net = float(s5["str"].values[iy, ix]) / 3600.0
+        lwdn2d, lwup2d, _ = load_surface_lw(cfg, None, None, s5)
+        strd = float(lwdn2d[iy, ix])
+        lwup_ref = float(lwup2d[iy, ix])
         lat = float(p5["latitude"].values[iy])
         lon = float(p5["longitude"].values[ix])
         columns.append({
@@ -151,7 +153,7 @@ def cmd_prep(args) -> int:
             "n_soundings": len(sts),
             "lat": lat, "lon": lon, "iy": iy, "ix": ix,
             "skt": skt, "t2m": t2m, "sp_hpa": sp_hpa,
-            "era5_lwdn": strd, "era5_lwup": strd - str_net,
+            "era5_lwdn": strd, "era5_lwup": lwup_ref,
             "obs_lwdn": float(np.nanmean(obs_dn)),
             "obs_lwup": float(np.nanmean(obs_up)),
             "cc_max": cc_max, "f_eff": f_eff,

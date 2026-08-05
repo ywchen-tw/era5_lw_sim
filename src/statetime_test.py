@@ -35,7 +35,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reanlib.config import figures_dir, load_config
-from lrt_sim import SIGMA, manifest_path, planck_band_fraction, results_path
+from lrt_sim import (REF_KEY_COMPAT, SIGMA, manifest_path,
+                     planck_band_fraction, results_path)
 
 CLEAR_CC_MAX = 0.01     # same eligibility thresholds as lrt_sim.py prep
 CLEAR_PATH_G = 1.0
@@ -48,7 +49,7 @@ def load_hour(cfg, date: dt.date, hour: int, sky: str):
     manifest = json.loads(manifest_path(cfg, date, hour, sky).read_text())
     res = pd.read_csv(results_path(cfg, date, hour, sky))
     sims = res["simulator"].astype(str)
-    df = pd.DataFrame(manifest["profiles"]).merge(
+    df = pd.DataFrame(manifest["profiles"]).rename(columns=REF_KEY_COMPAT).merge(
         res[sims.str.startswith("libradtran")]
         [["label", "sim_lwdn_sfc", "sim_lwup_sfc"]], on="label")
     rrt = res[sims.str.startswith("rrtmg")]
@@ -95,7 +96,7 @@ def main(argv: "list[str] | None" = None) -> int:
                  and "rrtmg_lwdn_sfc_h1" in df.columns)
 
     # ERA5 truth: the accumulation over [h1, h2] ending at h2
-    era5 = {"lwdn": df["era5_lwdn_h2"].values, "lwup": df["era5_lwup_h2"].values}
+    era5 = {"lwdn": df["ref_lwdn_h2"].values, "lwup": df["ref_lwup_h2"].values}
 
     # far-IR tail estimates for libRadtran (RRTMG covers the full band):
     # LWup from each hour's skin temperature, LWdn from the (shared) ERA5 flux
@@ -168,7 +169,7 @@ def main(argv: "list[str] | None" = None) -> int:
     lib2_raw = df["sim_lwdn_sfc_h2"].values
     rows = [
         (f"sim {h1:02d}Z vs {h1 - 1:02d}-{h1:02d}Z accum",
-         lib1_raw, df["era5_lwdn_h1"].values, still),
+         lib1_raw, df["ref_lwdn_h1"].values, still),
         (f"sim {h1:02d}Z vs {h1:02d}-{args.hour:02d}Z accum",
          lib1_raw, era5["lwdn"], still),
         (f"sim {args.hour:02d}Z vs {h1:02d}-{args.hour:02d}Z accum",
@@ -178,7 +179,7 @@ def main(argv: "list[str] | None" = None) -> int:
     try:
         man3 = json.loads(manifest_path(cfg, date, h3, args.sky).read_text())
         p3 = {p["label"]: p for p in man3["profiles"]}
-        e3 = np.array([p3[l]["era5_lwdn"] for l in df["label"]])
+        e3 = np.array([p3[l].get("ref_lwdn", p3[l].get("era5_lwdn")) for l in df["label"]])
         clear3 = np.array([(p3[l]["cc_max"] <= CLEAR_CC_MAX
                             and p3[l]["lwp_g"] + p3[l]["iwp_g"] <= CLEAR_PATH_G)
                            for l in df["label"]])

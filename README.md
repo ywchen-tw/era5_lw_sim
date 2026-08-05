@@ -118,10 +118,25 @@ MERRA-2 notes:
   smaller than ERA5's.
 - On the coarser MERRA-2 grid, MOSAiC match distances roughly double
   (~30 km at 85°N vs ~14 km for ERA5) — interpretation, not an error.
-- The radiative-transfer stages (7, 7b, 7c, 8) are ERA5-only for now: MERRA-2
-  surface radiation lives in the time-averaged `M2T1NXRAD` collection (W/m²,
-  not ERA5-style J/m² accumulations) and 3-D cloud fraction only in the
-  time-averaged `M2T3NPCLD` — see PLAN_TODO for the planned extension.
+- **Stage 7 (clear-sky) runs on MERRA-2 too**: `lrt_sim.py` and
+  `rrtmg_sim.py` accept `--source merra2`. Reference fluxes come from the
+  `M2T1NXRAD` collection (`merra2_download.py` fetches it as the `rad`
+  dataset): 1-h time-averaged W/m² stamped HH:30, so the two windows
+  bracketing the analysis instant are averaged (`LW↓ = LWGAB/EMIS`,
+  `LW↑ = LWGEM + (1−EMIS)·LW↓` — no `strd−str` differencing). Clear pixels
+  are screened on condensate alone (no 3-D cloud fraction in the
+  instantaneous plev collection), which also means `--sky cloudy`, stage 7c,
+  and stage 8 remain ERA5-only — see PLAN_TODO. Note the clear population is
+  small (MERRA-2 carries trace condensate almost everywhere in winter;
+  2020-01-01 12 UTC: 14 fully-clear full-height columns).
+  First MERRA-2 results (2020-01-01 12 UTC, 5 pixels): LW↑ closes to
+  −0.7 W/m² after the far-IR tail; LW↓ runs **+6 to +7 W/m² above MERRA-2's
+  flux** for libRadtran and RRTMG alike, and the `LWGABCLR` clear-sky
+  diagnostic matches the all-sky flux at those pixels (cloud effect
+  ~0.1 W/m²) — so the offset is not residual cloud but the radiation scheme
+  (GEOS uses Chou–Suarez, not the RRTMG family) and/or the IAU
+  analysis-vs-trajectory state difference. Recorded in PLAN_TODO for
+  follow-up.
 
 ## Usage
 
@@ -304,6 +319,8 @@ python src/cams_download.py --year 2020 --month 1
 python src/lrt_sim.py prep    --year 2020 --month 1 --day 1 --hour 12   # 5 clear pixels across SBI range
 python src/lrt_sim.py run     --year 2020 --month 1 --day 1 --hour 12   # uvspec thermal jobs
 python src/lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12   # table + figure
+# MERRA-2 variant (clear-sky only): add --source merra2 to the three
+# subcommands (and to rrtmg_sim.py); needs the merra2 rad dataset downloaded
 
 # cloudy mode: 5 near-overcast pixels (liquid/ice/mixed/thin/thick when
 # available); ERA5 clwc/ciwc become 1D wc/ic cloud files with fixed effective

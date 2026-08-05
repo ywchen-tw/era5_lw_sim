@@ -137,7 +137,7 @@ def draw_main() -> "plt.Figure":
     p2 = box(ax, 64, 41.5, 16, 5.5, "lrt_sim.py run\nuvspec thermal\n(libRadtran, DISORT)", C_PROC)
     p3 = box(ax, 64, 33.5, 16, 5.5, "rrtmg_sim.py\nRRTMG-LW (climlab),\nfull 3.08$-$1000 $\\mu$m", C_PROC)
     c1 = box(ax, 85, 41.5, 13.5, 5.5, "results CSV\n(simulator column)", C_DATA)
-    c2 = box(ax, 85, 33.5, 13.5, 5.5, "lrt_sim.py\ncompare\n3-way vs ERA5", C_PROC)
+    c2 = box(ax, 85, 33.5, 13.5, 5.5, "lrt_sim.py\ncompare\n3-way vs reference", C_PROC)
     cs = box(ax, 64, 20, 16, 6.5, "case_study.py\nmosaic_flux.py\nMOSAiC pixels: walkthrough\n+ full-drift LW closure", C_PROC)
     fg = box(ax, 85, 20, 13.5, 6.5, "figures/*.png", C_FIG)
     # ERA5 data over the top; CAMS through the corridor between columns

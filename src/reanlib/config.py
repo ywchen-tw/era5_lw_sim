@@ -53,10 +53,12 @@ DEFAULTS: dict = {
                             700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000],
     },
     "merra2": {
-        "collections": {"plev": "M2I3NPASM", "sfc": "M2I1NXASM"},
+        "collections": {"plev": "M2I3NPASM", "sfc": "M2I1NXASM",
+                        "rad": "M2T1NXRAD"},
         "version": "5.12.4",
         "plev_variables": ["T", "QV", "O3", "QL", "QI"],
         "sfc_variables": ["T2M", "TS", "PS"],
+        "rad_variables": ["LWGAB", "LWGEM", "LWGABCLR", "EMIS", "CLDTOT"],
         "default_hours": [0, 6, 12, 18],
     },
     "sbi": {"top_limit_hpa": 500, "max_embedded_levels": 1, "min_strength_k": 0.5},
@@ -115,6 +117,14 @@ def plev_path(cfg: dict, date: dt.date) -> Path:
 
 def sfc_path(cfg: dict, date: dt.date) -> Path:
     return _day_dir(cfg, "data", date) / f"{cfg['source']}_sfc_{date:%Y%m%d}.nc"
+
+
+def rad_path(cfg: dict, date: dt.date) -> Path:
+    """Surface-radiation daily file (MERRA-2 only; ERA5 radiation lives in
+    the sfc file as strd/str accumulations)."""
+    if cfg["source"] != "merra2":
+        raise ValueError("rad_path is MERRA-2-only; ERA5 radiation is in sfc_path")
+    return _day_dir(cfg, "data", date) / f"{cfg['source']}_rad_{date:%Y%m%d}.nc"
 
 
 def inversion_path(cfg: dict, date: dt.date) -> Path:

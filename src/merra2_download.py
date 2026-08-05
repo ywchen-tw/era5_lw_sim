@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from reanlib.config import load_config, plev_path, sfc_path
+from reanlib.config import load_config, plev_path, rad_path, sfc_path
 from reanlib.io_merra2 import hours_in_file, normalize_merra2, require_earthdata_credentials
 
 
@@ -84,7 +84,7 @@ def subset_via_opendap(url: str, kind: str, cfg: dict, date: dt.date,
 def subset_local(ds, kind: str, cfg: dict, date: dt.date, hours: list[int]):
     north, west, south, east = cfg["area"]
     m2 = cfg["merra2"]
-    variables = m2["plev_variables"] if kind == "plev" else m2["sfc_variables"]
+    variables = m2[f"{kind}_variables"]
     sel = ds[list(variables)].sel(lat=slice(south, north), lon=slice(west, east))
     keep = [t for t in sel["time"].values
             if t.astype("datetime64[s]").item().hour in set(hours)]
@@ -150,8 +150,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="day numbers and/or A-B ranges, e.g. 1 2 5-7")
     parser.add_argument("--hours", type=int, nargs="+", default=None,
                         help="UTC hours, multiples of 3 (default from config)")
-    parser.add_argument("--datasets", nargs="+", choices=["plev", "sfc"],
-                        default=["plev", "sfc"])
+    parser.add_argument("--datasets", nargs="+",
+                        choices=["plev", "sfc", "rad"],
+                        default=["plev", "sfc", "rad"])
     parser.add_argument("--config", default=None, help="path to config.yaml")
     parser.add_argument("--jobs", type=int, default=4,
                         help="concurrent downloads (default 4)")
@@ -172,15 +173,21 @@ def main(argv: list[str] | None = None) -> int:
                  f"collection is 3-hourly (00, 03, ..., 21 UTC)")
     days = parse_days(args.days, args.year, args.month)
 
-    path_fn = {"plev": plev_path, "sfc": sfc_path}
+    path_fn = {"plev": plev_path, "sfc": sfc_path, "rad": rad_path}
+    # rad (M2T1NXRAD) is time-averaged, stamped HH:30; the two windows
+    # bracketing analysis instant H are stamped (H-1):30 and H:30
+    kind_hours = {"plev": hours, "sfc": hours,
+                  "rad": sorted({x for h in hours for x in (h - 1, h)
+                                 if 0 <= x <= 23})}
     tasks = [(dt.date(args.year, args.month, day), kind)
              for day in days for kind in args.datasets]
 
     if args.dry_run:
         for date, kind in tasks:
             print(f"{date} {kind}:")
-            download_one(kind, cfg, date, hours, path_fn[kind](cfg, date),
-                         args.force, True, args.full_granule)
+            download_one(kind, cfg, date, kind_hours[kind],
+                         path_fn[kind](cfg, date), args.force, True,
+                         args.full_granule)
         return 0
 
     strategy = require_earthdata_credentials()
@@ -192,8 +199,9 @@ def main(argv: list[str] | None = None) -> int:
 
     failures = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        futures = {pool.submit(download_one, kind, cfg, date, hours,
-                               path_fn[kind](cfg, date), args.force, False,
+        futures = {pool.submit(download_one, kind, cfg, date,
+                               kind_hours[kind], path_fn[kind](cfg, date),
+                               args.force, False,
                                args.full_granule): (date, kind)
                    for date, kind in tasks}
         for fut in concurrent.futures.as_completed(futures):
