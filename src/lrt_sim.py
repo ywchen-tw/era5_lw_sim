@@ -2,9 +2,10 @@
 """Broadband LW (thermal) flux simulation from reanalysis profiles via libRadtran/er3t.
 
 Run under the ``er3t_env`` conda env (needs er3t + libRadtran; see README).
-Works from ERA5 (default) or MERRA-2 (--source merra2, clear-sky only — the
-instantaneous MERRA-2 plev collection has no 3-D cloud fraction). Three
-subcommands, all operating on one time snapshot:
+Works from ERA5 (default) or MERRA-2 (--source merra2; overcast screening
+then uses the rad file's CLDTOT, since the instantaneous MERRA-2 plev
+collection has no 3-D cloud fraction). Three subcommands, all operating on
+one time snapshot:
 
   prep     select N cloud-free pixels spanning the SBI-strength range, build
            libRadtran atmosphere/CH4 profile files from the reanalysis
@@ -43,7 +44,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reanlib.config import (REPO_ROOT, figures_dir, inversion_path, load_config,
                             plev_path, sfc_path, source_label)
-from reanlib.fluxes import load_surface_lw
+from reanlib.fluxes import load_cldtot, load_surface_lw
 from reanlib.inversion import column_heights
 from reanlib.io_era5 import open_era5
 
@@ -281,11 +282,14 @@ def cmd_prep(args) -> int:
     p = plev["pressure_level"].values.astype(float)          # descending
     sp_hpa = sfc["sp"].values / 100.0
 
-    # column condensate paths and cloud-fraction maximum (MERRA-2's
-    # instantaneous plev collection has no cloud fraction — condensate only)
-    has_cc = "cc" in plev
-    cc_max = (plev["cc"].max("pressure_level").values if has_cc
-              else np.full(sp_hpa.shape, np.nan))
+    # column condensate paths and cloud-fraction maximum. MERRA-2's
+    # instantaneous plev collection has no 3-D cloud fraction; use the rad
+    # file's total cloud fraction (1-h means bracketing the instant) as the
+    # screening surrogate — same thresholds as ERA5's per-level cc_max.
+    if "cc" in plev:
+        cc_max = plev["cc"].max("pressure_level").values
+    else:
+        cc_max = load_cldtot(cfg, date, when)
     # nan_to_num: MERRA-2 masks below-ground/marginal levels (no condensate there)
     p_pa_asc = p[::-1] * 100.0
     lwp_g = np.nan_to_num(TRAPZ(np.nan_to_num(plev["clwc"].values[::-1]),
@@ -313,9 +317,11 @@ def cmd_prep(args) -> int:
         print(f"reusing {len(picks)} pixel locations from {args.pixels_from} "
               f"(snapshot {ref['snapshot']})")
     elif args.sky == "clear":
-        # no cloud fraction, negligible condensate path, full column
-        # (without cc, screen on condensate alone with a tighter threshold)
-        clear = (((cc_max <= 0.01) & (lwp_g + iwp_g <= 1.0)) if has_cc
+        # no cloud fraction, negligible condensate path, full column.
+        # MERRA-2's CLDTOT is almost never <= 0.01 (trace fractions
+        # everywhere), so without per-level cc screen on condensate alone —
+        # <= 0.01 g/m2 is radiatively negligible whatever the fraction.
+        clear = (((cc_max <= 0.01) & (lwp_g + iwp_g <= 1.0)) if "cc" in plev
                  else (lwp_g + iwp_g <= 0.01)) & (sp_hpa >= 1000.0)
         print(f"clear-sky pixels: {clear.sum()} / {clear.size} "
               f"({clear.mean():.1%} of the domain)")
@@ -349,11 +355,6 @@ def cmd_prep(args) -> int:
     else:
         # cloudy: near-overcast columns so the plane-parallel (cloud fraction 1)
         # simulation matches the all-sky flux as closely as possible
-        if not has_cc:
-            sys.exit("--sky cloudy needs 3-D cloud fraction, which MERRA-2's "
-                     "instantaneous plev collection lacks (only time-averaged "
-                     "M2T3NPCLD has it) — MERRA-2 stage 7 is clear-sky only "
-                     "for now")
         overcast = (cc_max >= 0.99) & (sp_hpa >= 1000.0) & (lwp_g + iwp_g > 1.0)
         print(f"overcast pixels: {overcast.sum()} / {overcast.size} "
               f"({overcast.mean():.1%} of the domain)")
@@ -853,7 +854,7 @@ def compare_stats(cfg, args, manifest, df, w1, w2):
 
     sims_txt = "libRadtran & RRTMG-LW" if has_rrtmg else "libRadtran"
     fig.suptitle(f"{sky.capitalize()}-sky broadband LW statistics: {sims_txt} "
-                 f"(ERA5 profiles) vs ERA5 — {manifest['snapshot']}, "
+                 f"({lab} profiles) vs {lab} — {manifest['snapshot']}, "
                  f"n = {len(df)} pixels", y=1.03 if has_rrtmg else 1.06)
     outdir = figures_dir(cfg)
     outdir.mkdir(parents=True, exist_ok=True)

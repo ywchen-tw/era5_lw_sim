@@ -27,6 +27,21 @@ from .config import rad_path
 from .io_era5 import open_era5
 
 
+def load_cldtot(cfg: dict, date: dt.date, when):
+    """MERRA-2 total cloud fraction (2-D) around instant `when`: mean of the
+    M2T1NXRAD 1-h windows bracketing it. Screening surrogate for the missing
+    instantaneous 3-D cloud fraction (the plev collection has none)."""
+    rad = open_era5(rad_path(cfg, date))
+    when = np.datetime64(when)
+    stamps = [when - np.timedelta64(30, "m"), when + np.timedelta64(30, "m")]
+    have = [s for s in stamps if s in rad["valid_time"].values]
+    if not have:
+        raise KeyError(f"no M2T1NXRAD stamps around {when} in {rad_path(cfg, date)}")
+    out = rad["cldtot"].sel(valid_time=have).mean("valid_time").values
+    rad.close()
+    return out
+
+
 def load_surface_lw(cfg: dict, date: dt.date, when, sfc=None):
     """Reference surface LW fluxes around analysis instant `when`.
 

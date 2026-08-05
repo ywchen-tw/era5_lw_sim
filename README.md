@@ -9,8 +9,9 @@ simulates clear-sky broadband LW fluxes with libRadtran for comparison with
 ERA5 radiation — with AGU-style figures at every stage.
 
 The data source is selected with `source:` in `config.yaml` or `--source
-{era5,merra2}` on any analysis stage (see "Data sources" below). The
-radiative-transfer stages (7, 7b, 7c, 8) currently run on ERA5 only.
+{era5,merra2}` on any analysis stage (see "Data sources" below). Stages 1-7
+(incl. the RRTMG cross-check) run on either source; stages 7c and 8 are
+ERA5-only.
 
 ## Workflow at a glance
 
@@ -34,7 +35,7 @@ era5_analysis/
 │   ├── profile_analysis.py      # stage 5: profile PCA, surface-T, correlations
 │   ├── mosaic_compare.py        # stage 6: reanalysis vs MOSAiC radiosondes
 │   ├── cams_download.py         # CAMS EGG4 CO2/CH4 profiles (for stage 7)
-│   ├── lrt_sim.py               # stage 7: libRadtran LW fluxes vs ERA5 (er3t_env!)
+│   ├── lrt_sim.py               # stage 7: libRadtran LW fluxes vs reanalysis (er3t_env!)
 │   ├── rrtmg_sim.py             # stage 7b: RRTMG-LW cross-check via climlab (era5 env)
 │   ├── statetime_test.py        # stage 7c: snapshot vs accumulation-window test
 │   ├── case_study.py            # MOSAiC clear/cloudy single-pixel walkthrough figures
@@ -118,25 +119,27 @@ MERRA-2 notes:
   smaller than ERA5's.
 - On the coarser MERRA-2 grid, MOSAiC match distances roughly double
   (~30 km at 85°N vs ~14 km for ERA5) — interpretation, not an error.
-- **Stage 7 (clear-sky) runs on MERRA-2 too**: `lrt_sim.py` and
+- **Stage 7 runs on MERRA-2 too** (clear + overcast): `lrt_sim.py` and
   `rrtmg_sim.py` accept `--source merra2`. Reference fluxes come from the
   `M2T1NXRAD` collection (`merra2_download.py` fetches it as the `rad`
   dataset): 1-h time-averaged W/m² stamped HH:30, so the two windows
   bracketing the analysis instant are averaged (`LW↓ = LWGAB/EMIS`,
-  `LW↑ = LWGEM + (1−EMIS)·LW↓` — no `strd−str` differencing). Clear pixels
-  are screened on condensate alone (no 3-D cloud fraction in the
-  instantaneous plev collection), which also means `--sky cloudy`, stage 7c,
-  and stage 8 remain ERA5-only — see PLAN_TODO. Note the clear population is
-  small (MERRA-2 carries trace condensate almost everywhere in winter;
-  2020-01-01 12 UTC: 14 fully-clear full-height columns).
-  First MERRA-2 results (2020-01-01 12 UTC, 5 pixels): LW↑ closes to
-  −0.7 W/m² after the far-IR tail; LW↓ runs **+6 to +7 W/m² above MERRA-2's
-  flux** for libRadtran and RRTMG alike, and the `LWGABCLR` clear-sky
-  diagnostic matches the all-sky flux at those pixels (cloud effect
-  ~0.1 W/m²) — so the offset is not residual cloud but the radiation scheme
-  (GEOS uses Chou–Suarez, not the RRTMG family) and/or the IAU
-  analysis-vs-trajectory state difference. Recorded in PLAN_TODO for
-  follow-up.
+  `LW↑ = LWGEM + (1−EMIS)·LW↓` — no `strd−str` differencing). Screening:
+  clear pixels by negligible condensate (≤ 0.01 g/m²; MERRA-2's CLDTOT
+  carries trace fraction nearly everywhere, and truly clear full-height
+  columns are rare — 14 on 2020-01-01 12 UTC), overcast pixels by CLDTOT
+  ≥ 0.99 + condensate (2384 that snapshot). Stages 7c and 8 remain
+  ERA5-only.
+  First MERRA-2 results (2020-01-01 12 UTC): clear (5 px): LW↑ closes to
+  −0.7 W/m² after the far-IR tail, but LW↓ runs **+6–7 W/m² above MERRA-2's
+  flux** for libRadtran and RRTMG alike, with `LWGABCLR` ≈ all-sky there
+  (cloud effect ~0.1 W/m²) — not residual cloud but GEOS's Chou–Suarez LW
+  scheme vs RRTMG-family physics and/or the IAU analysis-vs-trajectory
+  state (PLAN_TODO). Cloudy (overcast, n = 500): LW↓ r = 0.975, bias
+  +1.15 W/m² (rmse 7.0) for libRadtran (+2.8 with tail; RRTMG +6.3 — the
+  same cloud-optics family offset seen vs ERA5), LW↑ r = 1.000, bias+tail
+  −0.5 W/m² — cloud emission dominates and the clear-sky LW↓ offset largely
+  disappears.
 
 ## Usage
 

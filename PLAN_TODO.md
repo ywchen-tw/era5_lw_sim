@@ -80,14 +80,13 @@ the README. Update this file when a stage lands or a plan changes.
 - [ ] **MERRA-2 clear-sky LW↓ offset** — first run (2020-01-01 12Z, 5
       pixels): sim ≈ +6–7 W/m² above MERRA-2's flux (libRadtran and RRTMG
       agree; LWGABCLR ≈ all-sky there, so not cloud). Candidates: GEOS
-      Chou–Suarez LW scheme vs RRTMG-family physics, IAU
-      analysis-vs-trajectory state (ERA5 stage-7c analogue; MERRA-2 plev is
-      3-hourly, so the 11Z trick becomes 09/12/15Z), and the 42-level
-      pressure-level truncation of the model state. LW↑ closes to −0.7 W/m².
-- [ ] **MERRA-2 stage 7 cloudy** — needs 3-D cloud fraction, which only
-      exists time-averaged (`M2T3NPCLD`, stamps 01:30/04:30/…) — new
-      state-time semantics; the stage-7c framing changes shape
-      (instantaneous state at HH vs mean flux centered HH:30).
+      Chou–Suarez LW scheme vs RRTMG-family physics and the 42-level
+      pressure-level truncation of the model state (no stage-7c-style
+      hourly state-time test planned for MERRA-2). LW↑ closes to −0.7 W/m².
+- [x] **MERRA-2 stage 7 cloudy (overcast)** — screened with the rad file's
+      CLDTOT (1-h means bracketing the instant) ≥ 0.99 + condensate;
+      per-level cloud *fraction* (partial-cloud work, `M2T3NPCLD`) remains
+      future.
 - [ ] **MERRA-2 stage 8 (PREFIRE)** — generalize the hard-coded 6-h snap in
       `prefire_bt.py` collocation to the source cadence; MERRA-2's 3-hourly
       plev state would halve the ≤3 h state-time offset listed above.
