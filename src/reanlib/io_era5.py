@@ -53,7 +53,8 @@ def open_era5(path: str | Path) -> xr.Dataset:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} does not exist — download it first with src/era5_download.py"
+            f"{path} does not exist — download it first (src/era5_download.py "
+            "for ERA5, src/merra2_download.py for MERRA-2)"
         )
     ds = xr.open_dataset(path)
 
@@ -85,7 +86,10 @@ def open_era5(path: str | Path) -> xr.Dataset:
             "and may be revised in the final ERA5 release.",
             stacklevel=2,
         )
-    ds.attrs["expver_values"] = ",".join(expver_values) if expver_values else "unknown"
+    if expver_values:
+        ds.attrs["expver_values"] = ",".join(expver_values)
+    else:
+        ds.attrs.setdefault("expver_values", "unknown")  # MERRA-2 files carry their own
 
     if "number" in ds.coords or "number" in ds.variables:
         ds = ds.drop_vars("number")

@@ -9,7 +9,7 @@ Three subcommands, all operating on one time snapshot:
            CO2/CH4), write a manifest with the matching ERA5 fluxes
   run      run uvspec (source thermal, integrated 4-100 um flux) per profile
   compare  table + figure of simulated vs ERA5 surface LW fluxes; becomes a
-           three-way comparison when era5_rrtmg_sim.py (run under the era5
+           three-way comparison when rrtmg_sim.py (run under the era5
            env) has added RRTMG-LW rows to the results CSV
 
 Physics choices (see plan/README): surface emission from ERA5 skin temperature
@@ -19,9 +19,9 @@ ERA5's RRTMG-LW 3.08-1000 um — the missing far-IR tail (~1% of sigma*T^4 at
 Arctic winter temperatures) is estimated analytically in ``compare``.
 
 Examples:
-    python src/era5_lrt_sim.py prep    --year 2020 --month 1 --day 1 --hour 12
-    python src/era5_lrt_sim.py run     --year 2020 --month 1 --day 1 --hour 12
-    python src/era5_lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12
+    python src/lrt_sim.py prep    --year 2020 --month 1 --day 1 --hour 12
+    python src/lrt_sim.py run     --year 2020 --month 1 --day 1 --hour 12
+    python src/lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import REPO_ROOT, figures_dir, inversion_path, load_config, plev_path, sfc_path
-from era5lib.inversion import column_heights
-from era5lib.io_era5 import open_era5
+from reanlib.config import REPO_ROOT, figures_dir, inversion_path, load_config, plev_path, sfc_path
+from reanlib.inversion import column_heights
+from reanlib.io_era5 import open_era5
 
 K_B = 1.380649e-23        # J K-1
 G0 = 9.80665              # m s-2
@@ -62,6 +62,7 @@ CH4_CONST_PPM = 1.9
 REFF_LIQ_UM = 10.0
 REFF_ICE_UM = 25.0
 R_DRY = 287.04            # J kg-1 K-1
+TRAPZ = getattr(np, "trapezoid", getattr(np, "trapz", None))   # numpy 2 rename
 
 LIBRADTRAN_DIR = os.environ.get(
     "LIBRADTRAN_V2_DIR", "/Users/yuch8913/programming/er3t/libRadtran-2.0.6")
@@ -96,7 +97,7 @@ def load_cams_profiles(year: int, month: int):
     """Arctic-mean CAMS EGG4 CO2/CH4 vmr profiles vs pressure, or None."""
     import xarray as xr
 
-    from era5_cams_download import cams_path
+    from cams_download import cams_path
     path = cams_path(year, month)
     if not path.exists():
         return None
@@ -255,9 +256,14 @@ def cmd_prep(args) -> int:
     date = dt.date(args.year, args.month, args.day)
     when = np.datetime64(f"{date:%Y-%m-%d}T{args.hour:02d}:00")
 
-    plev = open_era5(plev_path(cfg, date)).sel(valid_time=when)
-    sfc = open_era5(sfc_path(cfg, date)).sel(valid_time=when)
-    inv = open_era5(inversion_path(cfg, date)).sel(valid_time=when)
+    try:
+        plev = open_era5(plev_path(cfg, date)).sel(valid_time=when)
+        sfc = open_era5(sfc_path(cfg, date)).sel(valid_time=when)
+        inv = open_era5(inversion_path(cfg, date)).sel(valid_time=when)
+    except KeyError:
+        sys.exit(f"{when} missing from the ERA5/inversion files — download it "
+                 f"(era5_download.py --hours {args.hour}) and recompute the "
+                 f"day's inversions (daily_inversion.py --overwrite) first")
     plev = plev.transpose("pressure_level", "latitude", "longitude")
 
     p = plev["pressure_level"].values.astype(float)          # descending
@@ -266,15 +272,28 @@ def cmd_prep(args) -> int:
     # column condensate paths and cloud-fraction maximum
     cc_max = plev["cc"].max("pressure_level").values
     p_pa_asc = p[::-1] * 100.0
-    lwp_g = np.trapz(plev["clwc"].values[::-1], x=p_pa_asc, axis=0) / G0 * 1000.0
-    iwp_g = np.trapz(plev["ciwc"].values[::-1], x=p_pa_asc, axis=0) / G0 * 1000.0
+    lwp_g = TRAPZ(plev["clwc"].values[::-1], x=p_pa_asc, axis=0) / G0 * 1000.0
+    iwp_g = TRAPZ(plev["ciwc"].values[::-1], x=p_pa_asc, axis=0) / G0 * 1000.0
 
     strength = np.nan_to_num(inv["sbi_strength"].values)
     found = inv["sbi_found"].values.astype(bool)
     lat2d, lon2d = np.meshgrid(inv["latitude"].values, inv["longitude"].values,
                                indexing="ij")
 
-    if args.sky == "clear":
+    if args.pixels_from:
+        # reuse the exact pixel set of an earlier manifest (state-time tests:
+        # same columns at another hour, whatever their cloud state now — the
+        # per-pixel cc/lwp/iwp recorded below lets analyses filter later)
+        ref = json.loads(Path(args.pixels_from).read_text())
+        lats = plev["latitude"].values
+        lons = plev["longitude"].values
+        picks = [(rp["label"],
+                  (int(np.argmin(np.abs(lats - rp["lat"]))),
+                   int(np.argmin(np.abs(lons - rp["lon"])))))
+                 for rp in ref["profiles"]]
+        print(f"reusing {len(picks)} pixel locations from {args.pixels_from} "
+              f"(snapshot {ref['snapshot']})")
+    elif args.sky == "clear":
         # no cloud fraction, negligible condensate path, full column
         clear = ((cc_max <= 0.01) & (lwp_g + iwp_g <= 1.0) & (sp_hpa >= 1000.0))
         print(f"clear-sky pixels: {clear.sum()} / {clear.size} "
@@ -321,18 +340,20 @@ def cmd_prep(args) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     cams = None if args.fallback_constants else load_cams_profiles(args.year, args.month)
     if cams is None and not args.fallback_constants:
-        sys.exit("no CAMS file found — run src/era5_cams_download.py first, or "
+        sys.exit("no CAMS file found — run src/cams_download.py first, or "
                  "pass --fallback-constants for CO2 415 ppm / CH4 1.9 ppm")
 
     profiles = []
     for label, (iy, ix) in picks:
+        # hour-tagged file label so snapshots of the same day never collide
+        flabel = f"{label}_T{args.hour:02d}Z"
         above = p <= sp_hpa[iy, ix]
         skt = float(sfc["skt"].values[iy, ix])
         t2m = float(sfc["t2m"].values[iy, ix])
         p_col = p[above]
         t_col = plev["t"].values[above, iy, ix].astype(float)
         atm_file, ch4_file, keep, z_col = build_profile_files(
-            out_dir, label, p_col, t_col,
+            out_dir, flabel, p_col, t_col,
             plev["q"].values[above, iy, ix].astype(float),
             plev["o3"].values[above, iy, ix].astype(float),
             t2m, float(sp_hpa[iy, ix]), cams)
@@ -345,19 +366,18 @@ def cmd_prep(args) -> int:
             "sbi_found": int(found[iy, ix]),
             "skt": skt, "t2m": t2m,
             "era5_lwdn": strd, "era5_lwup": strd - str_net,
+            "cc_max": float(cc_max[iy, ix]),
+            "lwp_g": float(lwp_g[iy, ix]), "iwp_g": float(iwp_g[iy, ix]),
             "atm_file": atm_file, "ch4_file": ch4_file,
         }
         cloud_note = ""
         if args.sky == "cloudy":
-            prof["lwp_g"] = float(lwp_g[iy, ix])
-            prof["iwp_g"] = float(iwp_g[iy, ix])
-            prof["cc_max"] = float(cc_max[iy, ix])
             prof["wc_file"] = write_cloud_file(
-                out_dir / f"wc_{label}.dat", z_col,
+                out_dir / f"wc_{flabel}.dat", z_col,
                 plev["clwc"].values[above, iy, ix].astype(float)[keep],
                 p_col[keep], t_col[keep], REFF_LIQ_UM)
             prof["ic_file"] = write_cloud_file(
-                out_dir / f"ic_{label}.dat", z_col,
+                out_dir / f"ic_{flabel}.dat", z_col,
                 plev["ciwc"].values[above, iy, ix].astype(float)[keep],
                 p_col[keep], t_col[keep], REFF_ICE_UM)
             cloud_note = (f"  LWP {prof['lwp_g']:6.1f}  IWP {prof['iwp_g']:6.1f}"
@@ -374,6 +394,7 @@ def cmd_prep(args) -> int:
     manifest = {
         "snapshot": f"{date:%Y-%m-%d}T{args.hour:02d}:00Z",
         "sky": args.sky,
+        "pixels_from": str(args.pixels_from) if args.pixels_from else None,
         "emissivity": EMISSIVITY,
         "wavelength_range_nm": list(WVL_RANGE_NM),
         "reff_um": {"liquid": REFF_LIQ_UM, "ice": REFF_ICE_UM},
@@ -419,8 +440,8 @@ def cmd_run(args) -> int:
     inits, to_run = [], []
     for prof in manifest["profiles"]:
         label = prof["label"]
-        in_path = str(tmp_dir / f"input_{label}{tag}.txt")
-        out_path = str(tmp_dir / f"output_{label}{tag}.txt")
+        in_path = str(tmp_dir / f"input_{label}_T{args.hour:02d}Z{tag}.txt")
+        out_path = str(tmp_dir / f"output_{label}_T{args.hour:02d}Z{tag}.txt")
         lrt_cfg = copy.deepcopy(lrt_cfg_base)
         lrt_cfg["atmosphere_file"] = prof["atm_file"]
         input_dict_extra = {
@@ -491,7 +512,7 @@ def cmd_run(args) -> int:
     import pandas as pd
     rpath = results_path(cfg, date, args.hour, args.sky)
     out = pd.DataFrame(rows)
-    if rpath.exists():          # keep rows from other simulators (era5_rrtmg_sim.py)
+    if rpath.exists():          # keep rows from other simulators (rrtmg_sim.py)
         old = pd.read_csv(rpath)
         other = old[~old["simulator"].astype(str).str.startswith("libradtran")]
         if len(other):
@@ -509,7 +530,7 @@ def planck_band_fraction(T: float, wvl1_um: float, wvl2_um: float) -> float:
     wvl = np.logspace(np.log10(0.5e-6), np.log10(3000e-6), 20000)
     planck = (2 * h * c**2 / wvl**5) / (np.expm1(h * c / (wvl * kb * T)))
     band = (wvl >= wvl1_um * 1e-6) & (wvl <= wvl2_um * 1e-6)
-    return float(np.trapz(planck[band], wvl[band]) / np.trapz(planck, wvl))
+    return float(TRAPZ(planck[band], wvl[band]) / TRAPZ(planck, wvl))
 
 
 def cmd_compare(args) -> int:
@@ -518,7 +539,7 @@ def cmd_compare(args) -> int:
     import matplotlib.pyplot as plt
     import pandas as pd
 
-    from era5lib.plotstyle import apply_agu_style, panel_label
+    from reanlib.plotstyle import apply_agu_style, panel_label
 
     cfg = load_config(args.config)
     date = dt.date(args.year, args.month, args.day)
@@ -528,7 +549,7 @@ def cmd_compare(args) -> int:
     prof = pd.DataFrame(manifest["profiles"])
     df = prof.merge(res[sims.str.startswith("libradtran")], on="label") \
              .sort_values("sbi_strength", ascending=False)
-    rrt = res[sims.str.startswith("rrtmg")]     # era5_rrtmg_sim.py cross-check
+    rrt = res[sims.str.startswith("rrtmg")]     # rrtmg_sim.py cross-check
     if len(rrt):
         df = df.merge(
             rrt[["label", "sim_lwdn_sfc", "sim_lwup_sfc", "sim_olr_toa"]].rename(
@@ -592,7 +613,7 @@ def cmd_compare(args) -> int:
             ax.plot(x, df["rrtmg_" + kind + "_sfc"].values, "^", ms=7,
                     color="#009E73", label="RRTMG-LW (climlab)", zorder=3)
         ax.set_xticks(x)
-        if "lwp_g" in df.columns:
+        if manifest.get("sky", "clear") == "cloudy" and "lwp_g" in df.columns:
             ax.set_xticklabels([f"{l}\n{lw:.0f}/{iw:.0f}" for l, lw, iw in
                                 zip(df["label"], df["lwp_g"], df["iwp_g"])],
                                fontsize=8)
@@ -643,14 +664,14 @@ def cmd_compare(args) -> int:
 def compare_stats(cfg, args, manifest, df, w1, w2):
     """Statistical comparison for large pixel samples (n > 12).
 
-    With era5_rrtmg_sim.py results present the figure becomes a 2x2 three-way
+    With rrtmg_sim.py results present the figure becomes a 2x2 three-way
     comparison; panel (d) pits RRTMG (full 3.08-1000 um band) against
     libRadtran + the analytic far-IR tail, a direct check of that estimate.
     """
     import matplotlib.pyplot as plt
     import numpy as np
 
-    from era5lib.plotstyle import apply_agu_style, panel_label
+    from reanlib.plotstyle import apply_agu_style, panel_label
 
     sky = manifest.get("sky", "clear")
     date = dt.date(args.year, args.month, args.day)
@@ -820,6 +841,10 @@ def main(argv: "list[str] | None" = None) -> int:
                         help="pixels to simulate; > 5 switches to a seeded "
                              "random sample of the eligible population")
     p_prep.add_argument("--seed", type=int, default=0)
+    p_prep.add_argument("--pixels-from", default=None, metavar="MANIFEST",
+                        help="reuse the pixel set of an existing manifest "
+                             "instead of selecting pixels (state-time tests: "
+                             "same columns at another hour)")
     p_prep.add_argument("--fallback-constants", action="store_true",
                         help=f"skip CAMS; CO2 {CO2_CONST_PPM} ppm, "
                              f"CH4 {CH4_CONST_PPM} ppm")

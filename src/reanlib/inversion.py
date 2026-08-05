@@ -1,4 +1,4 @@
-"""Temperature-inversion strength metrics on ERA5 pressure-level profiles.
+"""Temperature-inversion strength metrics on reanalysis pressure-level profiles.
 
 Three metrics are computed at every grid point and time:
 
@@ -33,8 +33,9 @@ Three metrics are computed at every grid point and time:
    Bretherton 2006, J. Climate 19, 6425-6432).
 
 Pressure levels with p > surface pressure are below ground (ERA5 extrapolates
-them) and are excluded from the SBI scan; the fixed-level metrics are masked
-there when ``masking.mask_fixed_below_ground`` is enabled.
+them; MERRA-2 stores fill values, NaN after decoding) and are excluded from
+the SBI scan — as are levels with non-finite temperature; the fixed-level
+metrics are masked there when ``masking.mask_fixed_below_ground`` is enabled.
 """
 
 from __future__ import annotations
@@ -59,6 +60,12 @@ REFERENCES = {
                      "(three Arctic stations, Kahl/Serreze algorithm); "
                      "0.3 K variant: Ny-Alesund radiosonde climatology, "
                      "Atmos. Res. 2021"),
+}
+
+SOURCE_CITATIONS = {
+    "era5": "ERA5 (Hersbach et al. 2020, QJRMS 146, 1999-2049), via CDS",
+    "merra2": ("MERRA-2 (Gelaro et al. 2017, J. Climate 30, 5419-5454; "
+               "GMAO GEOS 5.12.4), via NASA GES DISC"),
 }
 
 
@@ -105,8 +112,9 @@ def sbi_scan(T: np.ndarray, p_hpa: np.ndarray, t2m: np.ndarray, sp_hpa: np.ndarr
         pk = float(p_hpa[k])
         if pk < top_limit_hpa:
             break
-        above = pk <= sp_hpa                             # level is above ground
         tk = T[:, k]
+        # above ground and finite (MERRA-2 fills below-ground levels with NaN)
+        above = (pk <= sp_hpa) & np.isfinite(tk)
         tvk = tk * (1.0 + 0.61 * q[:, k]) if q is not None else tk
         dz = (RD / G0) * 0.5 * (tv_prev + tvk) * np.log(p_prev / pk)
         zk = np.where(above, z_prev + dz, 0.0)
@@ -150,7 +158,7 @@ def column_heights(T: np.ndarray, p_hpa: np.ndarray, t2m: float, sp_hpa: float,
     tv_prev = float(t2m)
     for k in range(p_hpa.size):
         pk = float(p_hpa[k])
-        if pk > sp_hpa:
+        if pk > sp_hpa or not np.isfinite(T[k]):
             continue
         tvk = float(T[k]) * (1.0 + 0.61 * float(q[k])) if q is not None else float(T[k])
         z[k] = z_prev + (RD / G0) * 0.5 * (tv_prev + tvk) * np.log(p_prev / pk)
@@ -224,9 +232,9 @@ def compute_inversion_dataset(ds_plev: xr.Dataset, ds_sfc: xr.Dataset,
         "sbi_found": ("1", "1 where a surface-based inversion was detected", "sbi"),
         "dt_850_2m": ("K", "T(850 hPa) - T(2 m)", "dt_850_2m"),
         "dt_925_1000": ("K", "T(925 hPa) - T(1000 hPa)", "dt_925_1000"),
-        "t2m": ("K", "2 m temperature (from ERA5 single levels)", ""),
-        "skt": ("K", "skin temperature (from ERA5 single levels)", ""),
-        "sp": ("Pa", "surface pressure (from ERA5 single levels)", ""),
+        "t2m": ("K", "2 m temperature (from the single-level file)", ""),
+        "skt": ("K", "skin temperature (from the single-level file)", ""),
+        "sp": ("Pa", "surface pressure (from the single-level file)", ""),
     }
     for name, (units, desc, refkey) in meta.items():
         out[name].attrs["units"] = units
@@ -234,14 +242,15 @@ def compute_inversion_dataset(ds_plev: xr.Dataset, ds_sfc: xr.Dataset,
         if refkey:
             out[name].attrs["references"] = REFERENCES[refkey]
 
+    src = cfg.get("source", "era5")
     out.attrs = {
-        "title": "ERA5 Arctic temperature-inversion strength metrics",
+        "title": f"{src.upper()} Arctic temperature-inversion strength metrics",
         "sbi_parameters": (f"top_limit_hpa={sbi_cfg['top_limit_hpa']}, "
                            f"max_embedded_levels={sbi_cfg['max_embedded_levels']}, "
                            f"min_strength_k={sbi_cfg['min_strength_k']}"),
         "sbi_min_strength_reference": REFERENCES["min_strength"],
         "expver_plev": ds_plev.attrs.get("expver_values", "unknown"),
         "expver_sfc": ds_sfc.attrs.get("expver_values", "unknown"),
-        "source": "ERA5 (Hersbach et al. 2020, QJRMS 146, 1999-2049), via CDS",
+        "source": SOURCE_CITATIONS.get(src, src),
     }
     return out

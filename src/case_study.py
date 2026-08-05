@@ -16,9 +16,9 @@ Subcommands / envs:
   figure  (era5 env)     RRTMG-LW inline + the two case-study figures
 
 Examples:
-    conda activate era5     && python src/era5_case_study.py prep
-    conda activate er3t_env && python src/era5_case_study.py run
-    conda activate era5     && python src/era5_case_study.py figure
+    conda activate era5     && python src/case_study.py prep
+    conda activate er3t_env && python src/case_study.py run
+    conda activate era5     && python src/case_study.py figure
 """
 
 from __future__ import annotations
@@ -33,10 +33,10 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import REPO_ROOT, figures_dir, inversion_path, load_config, plev_path, sfc_path
-from era5lib.inversion import column_heights
-from era5lib.io_era5 import open_era5
-from era5_lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM, SIGMA,
+from reanlib.config import REPO_ROOT, figures_dir, inversion_path, load_config, pairs_path, plev_path, sfc_path
+from reanlib.inversion import column_heights
+from reanlib.io_era5 import open_era5
+from lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM, SIGMA,
                          WVL_RANGE_NM, build_profile_files, load_cams_profiles,
                          write_cloud_file)
 
@@ -50,7 +50,7 @@ RESULTS = CASE_DIR / "case_results.json"
 
 def load_sounding_profile(sounding_time, z_max_m=5000.0):
     """T(z) of the MOSAiC level-2 radiosonde nearest the given launch time."""
-    from era5lib.mosaic import sounding_profile
+    from reanlib.mosaic import sounding_profile
     sel = sounding_profile(sounding_time, z_max_m=z_max_m)
     if sel is None:
         return None
@@ -59,7 +59,7 @@ def load_sounding_profile(sounding_time, z_max_m=5000.0):
 
 
 def era5_match_time(sounding_time):
-    """Same 6-h rounding as era5_mosaic_compare: nearest of 00/06/12/18."""
+    """Same 6-h rounding as mosaic_compare: nearest of 00/06/12/18."""
     import pandas as pd
     return (pd.Timestamp(sounding_time) + pd.Timedelta(hours=3)).floor("6h")
 
@@ -79,9 +79,7 @@ def cmd_prep(args) -> int:
     import xarray as xr
 
     cfg = load_config(args.config)
-    pairs = xr.open_dataset(
-        REPO_ROOT / "derived" / f"{args.year}" / f"{args.month:02d}" /
-        f"era5_mosaic_pairs_{args.year}{args.month:02d}.nc")
+    pairs = xr.open_dataset(pairs_path(cfg, args.year, args.month))
     mos = xr.open_dataset(REPO_ROOT / "data" / "mosaic" / "MOSAiC_Atm_Properties.nc")
 
     cache = {}
@@ -116,7 +114,7 @@ def cmd_prep(args) -> int:
                      "iy": iy, "ix": ix, "cc_max": cc_max, "lwp": lwp,
                      "iwp": iwp, "obs_cc": float(ob["cc"]),
                      "obs_cbh": float(ob["cbh"]),
-                     "era5_sbi": float(pairs["era5_strength"][k]),
+                     "era5_sbi": float(pairs["rean_strength"][k]),
                      "obs_sbi": float(pairs["obs_strength"][k])})
     df = pd.DataFrame(rows)
 
@@ -290,7 +288,7 @@ def draw_case(cfg, manifest, case, res, rrtmg):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from era5lib.plotstyle import apply_agu_style, panel_label
+    from reanlib.plotstyle import apply_agu_style, panel_label
 
     C_ERA5, C_OBS, C_LIB, C_RRT = "#0072B2", "#000000", "#D55E00", "#009E73"
     prof = {k: np.array(v) for k, v in case["profile"].items()}
@@ -537,7 +535,7 @@ def draw_case(cfg, manifest, case, res, rrtmg):
 def cmd_figure(args) -> int:
     import climlab
     from climlab.domain.axis import Axis
-    import era5_rrtmg_sim as R
+    import rrtmg_sim as R
 
     cfg = load_config(args.config)
     manifest = json.loads(MANIFEST.read_text())

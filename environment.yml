@@ -7,6 +7,14 @@ dependencies:
   - xarray
   - netcdf4
   - numpy
+  - pandas
+  - scipy
   - matplotlib
   - cartopy
   - pyyaml
+  # MERRA-2 + PREFIRE downloads (NASA Earthdata)
+  - earthaccess
+  - pydap
+  # stage 7b RRTMG-LW cross-check
+  - climlab
+  - climlab-rrtmg

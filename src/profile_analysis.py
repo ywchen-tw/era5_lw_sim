@@ -4,8 +4,9 @@
 Three analyses over one month (samples = grid point x time):
 
 1. PCA/EOF of lower-tropospheric temperature profiles (1000 hPa up to --top,
-   default 400 hPa). Only samples with surface pressure >= 1000 hPa are used
-   so every level is above ground (this excludes Greenland/terrain). The
+   default 400 hPa). Only samples with surface pressure >= 1000 hPa and all
+   profile levels finite are used so every level is above ground (this
+   excludes Greenland/terrain, and MERRA-2's masked marginal levels). The
    covariance matrix is accumulated from raw moments in one pass, so memory
    stays flat. EOFs are oriented so the lowest-level loading is positive.
 2. Surface temperature: monthly mean and variability of t2m.
@@ -14,10 +15,10 @@ Three analyses over one month (samples = grid point x time):
    Strength is the unconditional series (not-found = 0 K) so the time series
    is gap-free; the correlation therefore mixes occurrence and intensity.
 
-Outputs derived/YYYY/MM/era5_profile_analysis_YYYYMM.nc and two figures.
+Outputs derived/YYYY/MM/profile_analysis_YYYYMM.nc and two figures.
 
 Examples:
-    python src/era5_profile_analysis.py --year 2020 --month 1
+    python src/profile_analysis.py --year 2020 --month 1
 """
 
 from __future__ import annotations
@@ -36,23 +37,16 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from era5lib.config import REPO_ROOT, figures_dir, inversion_path, load_config, plev_path
-from era5lib.io_era5 import open_era5
-from era5lib.mapping import polar_panel
-from era5lib.plotstyle import apply_agu_style, panel_label
+from reanlib.config import analysis_path, figures_dir, inversion_path, load_config, plev_path, source_label
+from reanlib.io_era5 import open_era5
+from reanlib.mapping import polar_panel
+from reanlib.plotstyle import apply_agu_style, panel_label
 
 T2M_BINS = np.arange(-50.0, 1.0, 1.0)        # degC
 STRENGTH_BINS = np.arange(0.0, 25.5, 0.5)    # K
 PC_BINS = np.arange(-40.0, 40.5, 1.0)        # K (PC scores carry K units)
 N_MODES = 6
 
-
-def analysis_path(cfg: dict, year: int, month: int) -> Path:
-    root = Path(cfg["paths"]["derived"])
-    if not root.is_absolute():
-        root = REPO_ROOT / root
-    return (root / f"{year:04d}" / f"{month:02d}"
-            / f"era5_profile_analysis_{year:04d}{month:02d}.nc")
 
 
 class CorrAccum:
@@ -94,13 +88,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--days", nargs="+", default=None)
     parser.add_argument("--top", type=float, default=400.0,
                         help="top pressure level of the PCA profiles (hPa)")
+    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+                        help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no-figures", action="store_true")
     args = parser.parse_args(argv)
 
     apply_agu_style()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     ndays = calendar.monthrange(args.year, args.month)[1]
     tokens = args.days if args.days else [f"1-{ndays}"]
     days = parse_days(tokens, args.year, args.month)
@@ -109,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
                                         and inversion_path(cfg, d).exists())]
     if missing:
         sys.exit(f"missing plev/derived files for {len(missing)} day(s), "
-                 f"first: {missing[0]} — run era5_download.py / era5_inversion.py")
+                 f"first: {missing[0]} — run era5_download.py / daily_inversion.py")
 
     target = analysis_path(cfg, args.year, args.month)
     if target.exists() and not args.overwrite:
@@ -157,7 +153,9 @@ def compute(cfg: dict, dates: list[dt.date], top_hpa: float) -> xr.Dataset:
              .transpose("valid_time", "pressure_level", "latitude", "longitude")
              .values.astype(np.float64))
         sp_hpa = inv["sp"].values / 100.0
-        valid = sp_hpa >= 1000.0                       # (ntime, nlat, nlon)
+        # sp >= 1000 hPa AND every PCA level finite (MERRA-2 masks marginal
+        # near-surface levels even where sp >= 1000; ERA5 extrapolates)
+        valid = (sp_hpa >= 1000.0) & np.isfinite(T).all(axis=1)
         x = T.transpose(0, 2, 3, 1)[valid]             # (nsamples, nlev)
         sum_x += x.sum(axis=0)
         m2 += x.T @ x
@@ -196,7 +194,7 @@ def compute(cfg: dict, dates: list[dt.date], top_hpa: float) -> xr.Dataset:
         t2m = inv["t2m"].values.astype(np.float64)
         sp_hpa = inv["sp"].values / 100.0
         strength = np.nan_to_num(inv["sbi_strength"].values.astype(np.float64))
-        valid = sp_hpa >= 1000.0
+        valid = (sp_hpa >= 1000.0) & np.isfinite(T).all(axis=1)
         anom = T.transpose(0, 2, 3, 1) - mean_profile
         pc1 = anom @ eofs[0]
         pc2 = anom @ eofs[1]
@@ -245,7 +243,7 @@ def compute(cfg: dict, dates: list[dt.date], top_hpa: float) -> xr.Dataset:
         },
     )
     out.attrs = {
-        "title": "Monthly ERA5 profile PCA / surface-T / correlation analysis",
+        "title": f"Monthly {source_label(cfg)} profile PCA / surface-T / correlation analysis",
         "n_pca_samples": n_samples,
         "n_time_steps": n_time,
         "pca_levels": f"1000-{top_hpa:g} hPa, samples restricted to sp >= 1000 hPa",

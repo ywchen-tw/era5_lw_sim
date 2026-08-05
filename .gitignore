@@ -29,3 +29,6 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .DS_Store
+
+# macOS AppleDouble files on external volumes
+._*

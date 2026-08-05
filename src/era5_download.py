@@ -23,8 +23,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import load_config, plev_path, sfc_path
-from era5lib.io_era5 import open_era5, require_cds_credentials
+from reanlib.config import load_config, plev_path, sfc_path
+from reanlib.io_era5 import open_era5, require_cds_credentials
 
 DATASET_IDS = {
     "plev": "reanalysis-era5-pressure-levels",
@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="print the CDS requests without downloading")
     args = parser.parse_args(argv)
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source="era5")  # this downloader is ERA5-only
     hours = args.hours if args.hours is not None else cfg["download"]["default_hours"]
     bad = [h for h in hours if not 0 <= h <= 23]
     if bad:

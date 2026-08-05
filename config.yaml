@@ -1,14 +1,18 @@
-# ERA5 Arctic inversion pipeline — user-editable defaults.
+# Arctic inversion pipeline — user-editable defaults.
 # CLI arguments override these where applicable.
+
+# Default reanalysis data source: era5 | merra2 (per-stage override: --source).
+source: era5
 
 # Download / analysis domain as [North, West, South, East] (degrees).
 area: [90, -180, 80, 180]
 
 paths:
-  data: data          # raw downloads    -> data/YYYY/MM/DD/
-  derived: derived    # metric netCDFs   -> derived/YYYY/MM/DD/
-  figures: figures
+  data: data          # raw downloads    -> data/<source>/YYYY/MM/DD/
+  derived: derived    # metric netCDFs   -> derived/<source>/YYYY/MM/DD/
+  figures: figures    # figures          -> figures/<source>/
 
+# ERA5 (Copernicus CDS) download settings — src/era5_download.py.
 download:
   default_hours: [0, 6, 12, 18]
   plev_variables:
@@ -35,6 +39,20 @@ download:
   pressure_levels: [1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175,
                     200, 225, 250, 300, 350, 400, 450, 500, 550, 600, 650,
                     700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000]
+
+# MERRA-2 (NASA GES DISC) download settings — src/merra2_download.py.
+# Downloaded files are normalized on write to the same variable/coordinate
+# names as ERA5 (t, q, o3, clwc, ciwc / t2m, skt, sp), so all analysis stages
+# read either source unchanged.
+merra2:
+  collections:
+    plev: M2I3NPASM   # inst3_3d_asm_Np: 3-hourly INSTANTANEOUS, 42 pressure levels
+    sfc: M2I1NXASM    # inst1_2d_asm_Nx: hourly INSTANTANEOUS single-level
+  version: "5.12.4"
+  plev_variables: [T, QV, O3, QL, QI]   # -> t, q, o3, clwc, ciwc
+  sfc_variables: [T2M, TS, PS]          # -> t2m, skt, sp
+  # Hours must be multiples of 3 (the M2I3NPASM cadence).
+  default_hours: [0, 6, 12, 18]
 
 # Surface-based inversion (SBI) scan parameters.
 sbi:

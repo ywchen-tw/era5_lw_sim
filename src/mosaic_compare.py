@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Sounding-by-sounding comparison of ERA5 inversion metrics with MOSAiC.
+"""Sounding-by-sounding comparison of reanalysis inversion metrics with MOSAiC.
 
 Matches each MOSAiC radiosonde (Jozef et al. 2023, ESSD 15, 4983-5010;
 doi:10.1594/PANGAEA.957760) launched in the chosen month against the nearest
-ERA5 grid point and 6-hourly time step of the derived inversion files, and
+reanalysis grid point and 6-hourly time step of the derived inversion files, and
 compares surface-based inversion presence, strength, and depth, plus the 2 m
 temperature.
 
@@ -12,13 +12,13 @@ Definitions are not identical and the comparison keeps them explicit:
   over >= 25 m (5 m resolution). A sounding counts as having an SBI when its
   lowest inversion base (inv_alt) is <= --sbi-base-max (default 100 m); its
   strength/depth are that layer's inv_dt / inv_dz.
-- ERA5: Kahl/Serreze-style scan on 37 pressure levels, strength >= 0.5 K
-  (see era5lib/inversion.py).
+- Reanalysis: Kahl/Serreze-style scan on pressure levels, strength >= 0.5 K
+  (see reanlib/inversion.py).
 
-Outputs derived/YYYY/MM/era5_mosaic_pairs_YYYYMM.nc and one figure.
+Outputs derived/<source>/YYYY/MM/<source>_mosaic_pairs_YYYYMM.nc and one figure.
 
 Examples:
-    python src/era5_mosaic_compare.py --year 2020 --month 1
+    python src/mosaic_compare.py --year 2020 --month 1
 """
 
 from __future__ import annotations
@@ -36,23 +36,16 @@ import numpy as np
 import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import REPO_ROOT, figures_dir, inversion_path, load_config
-from era5lib.io_era5 import open_era5
-from era5lib.mapping import polar_panel
-from era5lib.mosaic import sounding_profile
-from era5lib.plotstyle import apply_agu_style, panel_label
+from reanlib.config import REPO_ROOT, figures_dir, inversion_path, load_config, pairs_path
+from reanlib.io_era5 import open_era5
+from reanlib.mapping import polar_panel
+from reanlib.mosaic import sounding_profile
+from reanlib.plotstyle import apply_agu_style, panel_label
 
 MOSAIC_FILE = REPO_ROOT / "data" / "mosaic" / "MOSAiC_Atm_Properties.nc"
 C_OBS = "#0072B2"
 C_ERA = "#D55E00"
 
-
-def pairs_path(cfg: dict, year: int, month: int) -> Path:
-    root = Path(cfg["paths"]["derived"])
-    if not root.is_absolute():
-        root = REPO_ROOT / root
-    return (root / f"{year:04d}" / f"{month:02d}"
-            / f"era5_mosaic_pairs_{year:04d}{month:02d}.nc")
 
 
 def load_mosaic(year: int, month: int, sbi_base_max: float) -> xr.Dataset:
@@ -89,12 +82,12 @@ def load_mosaic(year: int, month: int, sbi_base_max: float) -> xr.Dataset:
 
 
 def obs_fixed_metrics(obs: xr.Dataset) -> xr.Dataset:
-    """Observed counterparts of the ERA5 fixed-level metrics, per sounding.
+    """Observed counterparts of the reanalysis fixed-level metrics, per sounding.
 
     T(850 hPa) - T(2 m) uses the tower 2 m temperature and the level-2
     radiosonde profile interpolated in log-p; T(925) - T(1000) is NaN when
     the sounding's surface pressure is below 1000 hPa (level underground) —
-    the same masking the ERA5 metric applies.
+    the same masking the reanalysis metric applies.
     """
     dt850, dt925 = [], []
     for ts, t2m in zip(obs["time"].values, obs["obs_t2m"].values):
@@ -120,11 +113,11 @@ def obs_fixed_metrics(obs: xr.Dataset) -> xr.Dataset:
                       obs_dt_925_1000=(("time",), np.array(dt925)))
 
 
-def match_era5(cfg: dict, obs: xr.Dataset, max_dt_h: float = 3.0) -> xr.Dataset:
-    """Nearest-in-space-and-time ERA5 values for each sounding."""
-    fields = {k: [] for k in ("era5_sbi_found", "era5_strength", "era5_depth",
-                              "era5_dt_850_2m", "era5_dt_925_1000",
-                              "era5_t2m", "match_dt_h", "match_km")}
+def match_reanalysis(cfg: dict, obs: xr.Dataset, max_dt_h: float = 3.0) -> xr.Dataset:
+    """Nearest-in-space-and-time reanalysis values for each sounding."""
+    fields = {k: [] for k in ("rean_sbi_found", "rean_strength", "rean_depth",
+                              "rean_dt_850_2m", "rean_dt_925_1000",
+                              "rean_t2m", "match_dt_h", "match_km")}
     cache: dict = {}
     for ts, la, lo in zip(obs["time"].values, obs["lat"].values, obs["lon"].values):
         t_near = (ts + np.timedelta64(3, "h")).astype("datetime64[6h]").astype("datetime64[ns]")
@@ -143,31 +136,36 @@ def match_era5(cfg: dict, obs: xr.Dataset, max_dt_h: float = 3.0) -> xr.Dataset:
         dlat = float(col["latitude"]) - la
         dlon = (float(col["longitude"]) - lo + 180) % 360 - 180
         km = np.hypot(dlat * 111.2, dlon * 111.2 * np.cos(np.deg2rad(la)))
-        fields["era5_sbi_found"].append(float(col["sbi_found"]))
-        fields["era5_strength"].append(float(col["sbi_strength"]))
-        fields["era5_depth"].append(float(col["sbi_depth_z"]))
-        fields["era5_dt_850_2m"].append(float(col["dt_850_2m"]))
-        fields["era5_dt_925_1000"].append(float(col["dt_925_1000"]))
-        fields["era5_t2m"].append(float(col["t2m"]))
+        fields["rean_sbi_found"].append(float(col["sbi_found"]))
+        fields["rean_strength"].append(float(col["sbi_strength"]))
+        fields["rean_depth"].append(float(col["sbi_depth_z"]))
+        fields["rean_dt_850_2m"].append(float(col["dt_850_2m"]))
+        fields["rean_dt_925_1000"].append(float(col["dt_925_1000"]))
+        fields["rean_t2m"].append(float(col["t2m"]))
         fields["match_dt_h"].append(dt_h)
         fields["match_km"].append(km)
     return obs.assign({k: (("time",), np.array(v, dtype=float))
                        for k, v in fields.items()})
 
 
+def source_label(pairs: xr.Dataset) -> str:
+    return pairs.attrs.get("source_label", "ERA5")
+
+
 def stats_block(pairs: xr.Dataset) -> str:
+    lab = source_label(pairs)
     ok = np.isfinite(pairs["match_dt_h"].values)
     obs_f = pairs["obs_sbi_found"].values.astype(bool) & ok
-    era_f = (pairs["era5_sbi_found"].values == 1) & ok
+    era_f = (pairs["rean_sbi_found"].values == 1) & ok
     both = obs_f & era_f
     lines = [f"matched soundings          : {int(ok.sum())} / {ok.size}",
              f"obs SBI frequency          : {obs_f.sum() / ok.sum():.1%}",
-             f"ERA5 SBI frequency         : {era_f.sum() / ok.sum():.1%}",
+             f"{lab} SBI frequency".ljust(27) + f": {era_f.sum() / ok.sum():.1%}",
              f"detection agreement        : "
              f"{((obs_f == era_f) & ok).sum() / ok.sum():.1%}"]
     for name, o, e, unit in (
-            ("strength", pairs["obs_strength"].values, pairs["era5_strength"].values, "K"),
-            ("depth", pairs["obs_depth"].values, pairs["era5_depth"].values, "m")):
+            ("strength", pairs["obs_strength"].values, pairs["rean_strength"].values, "K"),
+            ("depth", pairs["obs_depth"].values, pairs["rean_depth"].values, "m")):
         m = both & np.isfinite(o) & np.isfinite(e)
         if m.sum() > 2:
             r = np.corrcoef(o[m], e[m])[0, 1]
@@ -176,8 +174,8 @@ def stats_block(pairs: xr.Dataset) -> str:
             lines.append(f"{name:<10} (both detect, n={m.sum():3d}): r={r:+.2f}  "
                          f"bias={bias:+.2f} {unit}  rmse={rmse:.2f} {unit}")
     # fixed-level metrics vs the SAME metric derived from the soundings
-    for name, evar, ovar in (("dt_850_2m", "era5_dt_850_2m", "obs_dt_850_2m"),
-                             ("dt_925_1000", "era5_dt_925_1000",
+    for name, evar, ovar in (("dt_850_2m", "rean_dt_850_2m", "obs_dt_850_2m"),
+                             ("dt_925_1000", "rean_dt_925_1000",
                               "obs_dt_925_1000")):
         if ovar not in pairs:
             lines.append(f"{name:<11}: no obs counterpart (level-2 soundings "
@@ -191,7 +189,7 @@ def stats_block(pairs: xr.Dataset) -> str:
             lines.append(f"{name:<11} vs obs {name} (n={m.sum():3d}): "
                          f"r={r:+.2f}  bias={(e[m] - o[m]).mean():+.2f} K  "
                          f"rmse={np.sqrt(((e[m] - o[m]) ** 2).mean()):.2f} K")
-    o, e = pairs["obs_t2m"].values, pairs["era5_t2m"].values
+    o, e = pairs["obs_t2m"].values, pairs["rean_t2m"].values
     m = ok & np.isfinite(o) & np.isfinite(e)
     r = np.corrcoef(o[m], e[m])[0, 1]
     lines.append(f"t2m        (n={m.sum():3d})           : r={r:+.2f}  "
@@ -207,11 +205,12 @@ C_DT925 = "#CC79A7"
 def fig_compare(pairs: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
     import cartopy.crs as ccrs
 
+    lab = source_label(pairs)
     fig = plt.figure(figsize=(13.6, 10.2), layout="constrained")
     gs = fig.add_gridspec(2, 3, height_ratios=[1.0, 0.85])
     t = pairs["time"].values
     obs_s = np.where(pairs["obs_sbi_found"], pairs["obs_strength"], 0.0)
-    era_s = np.nan_to_num(pairs["era5_strength"].values)
+    era_s = np.nan_to_num(pairs["rean_strength"].values)
 
     # (a) drift track on the domain, colored by observed SBI strength
     ax = fig.add_subplot(gs[0, 0], projection=ccrs.NorthPolarStereo())
@@ -232,14 +231,14 @@ def fig_compare(pairs: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
     ax.set_title("Polarstern drift track")
     panel_label(ax, "a", x=-0.02, y=1.05)
 
-    # (b) time series along the drift: obs SBI vs the three ERA5 metrics
+    # (b) time series along the drift: obs SBI vs the three reanalysis metrics
     ax = fig.add_subplot(gs[0, 1:])
     ax.plot(t, obs_s, "o-", color=C_OBS, lw=1.4, ms=3.5, label="MOSAiC SBI")
-    ax.plot(t, era_s, "s-", color=C_ERA, lw=1.2, ms=3.0, label="ERA5 SBI")
-    ax.plot(t, pairs["era5_dt_850_2m"], "-", color=C_DT850, lw=1.0,
-            label="ERA5 T850 − T2m")
-    ax.plot(t, pairs["era5_dt_925_1000"], "-", color=C_DT925, lw=1.0,
-            label="ERA5 T925 − T1000")
+    ax.plot(t, era_s, "s-", color=C_ERA, lw=1.2, ms=3.0, label=f"{lab} SBI")
+    ax.plot(t, pairs["rean_dt_850_2m"], "-", color=C_DT850, lw=1.0,
+            label=f"{lab} T850 − T2m")
+    ax.plot(t, pairs["rean_dt_925_1000"], "-", color=C_DT925, lw=1.0,
+            label=f"{lab} T925 − T1000")
     # observed counterparts of the fixed-level metrics: dashed, same colors
     if "obs_dt_850_2m" in pairs:
         ax.plot(t, pairs["obs_dt_850_2m"], "--", color=C_DT850, lw=1.0,
@@ -256,20 +255,20 @@ def fig_compare(pairs: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
         ax.spines[side].set_visible(False)
     panel_label(ax, "b", x=-0.06, y=1.06)
 
-    # (c-e) scatter: each ERA5 metric vs the SAME metric from the observations
+    # (c-e) scatter: each reanalysis metric vs the SAME metric from the observations
     obs_found = pairs["obs_sbi_found"].values.astype(bool)
     nanvec = np.full(pairs["time"].shape, np.nan)
     allsky = np.ones(pairs["time"].shape, dtype=bool)
     panels = (
-        (pairs["obs_strength"].values, pairs["era5_strength"].values,
-         "MOSAiC SBI strength", "ERA5 SBI strength", C_OBS,
-         obs_found & (pairs["era5_sbi_found"].values == 1)),
+        (pairs["obs_strength"].values, pairs["rean_strength"].values,
+         "MOSAiC SBI strength", f"{lab} SBI strength", C_OBS,
+         obs_found & (pairs["rean_sbi_found"].values == 1)),
         (pairs["obs_dt_850_2m"].values if "obs_dt_850_2m" in pairs else nanvec,
-         pairs["era5_dt_850_2m"].values,
-         "MOSAiC T850 − T2m", "ERA5 T850 − T2m", C_DT850, allsky),
+         pairs["rean_dt_850_2m"].values,
+         "MOSAiC T850 − T2m", f"{lab} T850 − T2m", C_DT850, allsky),
         (pairs["obs_dt_925_1000"].values if "obs_dt_925_1000" in pairs else nanvec,
-         pairs["era5_dt_925_1000"].values,
-         "MOSAiC T925 − T1000", "ERA5 T925 − T1000", C_DT925, allsky),
+         pairs["rean_dt_925_1000"].values,
+         "MOSAiC T925 − T1000", f"{lab} T925 − T1000", C_DT925, allsky),
     )
     for i, (ox, ex, xlabel, ylabel, color, m) in enumerate(panels):
         ax = fig.add_subplot(gs[1, i])
@@ -300,7 +299,7 @@ def fig_compare(pairs: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
 
-    fig.suptitle(f"ERA5 vs. MOSAiC radiosondes — {calendar.month_name[month]} {year}\n"
+    fig.suptitle(f"{lab} vs. MOSAiC radiosondes — {calendar.month_name[month]} {year}\n"
                  "SBI: gradient criterion (Jozef et al. 2023) vs Kahl/Serreze "
                  "scan; fixed metrics from level-2 profiles (Maturilli et al. "
                  "2021) + tower 2 m", y=1.04)
@@ -317,13 +316,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sbi-base-max", type=float, default=100.0,
                         help="max obs inversion-base altitude (m) to count as "
                              "surface-based (default 100)")
+    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+                        help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no-figures", action="store_true")
     args = parser.parse_args(argv)
 
     apply_agu_style()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     target = pairs_path(cfg, args.year, args.month)
     if target.exists() and not args.overwrite:
         print(f"{target} exists, loading it (use --overwrite to recompute)")
@@ -333,17 +334,19 @@ def main(argv: list[str] | None = None) -> int:
         if obs.sizes["time"] == 0:
             sys.exit(f"no MOSAiC soundings in {args.year}-{args.month:02d}")
         print(f"{obs.sizes['time']} MOSAiC soundings in {args.year}-{args.month:02d}, "
-              f"matching against ERA5 ...")
+              f"matching against {cfg['source'].upper()} ...")
         obs = obs_fixed_metrics(obs)
-        pairs = match_era5(cfg, obs)
+        pairs = match_reanalysis(cfg, obs)
+        lab = {"era5": "ERA5", "merra2": "MERRA-2"}[cfg["source"]]
         pairs.attrs = {
-            "title": "ERA5 vs MOSAiC radiosonde inversion comparison",
+            "title": f"{lab} vs MOSAiC radiosonde inversion comparison",
+            "source_label": lab,
             "obs_source": "Jozef et al. 2023, doi:10.1594/PANGAEA.957760 (CC-BY-4.0)",
             "obs_profile_source": ("level-2 radiosondes, Maturilli et al. 2021, "
                                    "doi:10.1594/PANGAEA.928656 (CC-BY-4.0)"),
             "obs_criterion": ("dT/dz > 0.65 C/100m over >= 25 m; SBI = lowest "
                               f"inversion base <= {args.sbi_base_max:g} m"),
-            "era5_criterion": "Kahl/Serreze pressure-level scan, strength >= 0.5 K",
+            "rean_criterion": "Kahl/Serreze pressure-level scan, strength >= 0.5 K",
         }
         target.parent.mkdir(parents=True, exist_ok=True)
         pairs.to_netcdf(target)

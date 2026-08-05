@@ -10,22 +10,42 @@ the README. Update this file when a stage lands or a plan changes.
       fixed-level inversion metrics, profile/map figures, monthly
       climatology, profile PCA, MOSAiC comparison (incl. matched-metric
       obs counterparts from the level-2 soundings).
-- [x] **Stage 7 — LW flux closure** (`era5_lrt_sim.py`): libRadtran thermal
+- [x] **Stage 7 — LW flux closure** (`lrt_sim.py`): libRadtran thermal
       fluxes vs ERA5 strd/str; n=500 clear + cloudy statistics.
       Clear-sky LW↓ mismatch diagnosed as forecast-accumulation vs analysis
       state-time, not radiative transfer.
-- [x] **Stage 7b — RRTMG-LW cross-check** (`era5_rrtmg_sim.py`): validates
+- [x] **Stage 7b — RRTMG-LW cross-check** (`rrtmg_sim.py`): validates
       the far-IR tail estimate (RRTMG − (lib+tail) = +0.02 ± 0.07 W/m²);
       bottom-interface skin-temperature patch.
-- [x] **MOSAiC case study + full-drift closure** (`era5_case_study.py`,
-      `era5_mosaic_flux.py`): 123 matched columns, Jan 2020; LW↑ warm-skin
+- [x] **MOSAiC case study + full-drift closure** (`case_study.py`,
+      `mosaic_flux.py`): 123 matched columns, Jan 2020; LW↑ warm-skin
       bias +11.5 W/m² shared by sims and ERA5.
 - [x] **Stage 8 — PREFIRE BT simulation + Jacobians**
-      (`era5_prefire_download.py`, `era5_prefire_bt.py`): collocation
+      (`prefire_download.py`, `prefire_bt.py`): collocation
       (2025-01-01 SAT1 test set: 3 clear + 3 overcast), channel BT on the
       mission SRF/blackbody-lookup scale, RRTMG band cross-check,
       finite-difference K matrices (skt, T/q per level, cloud, emissivity),
       cotscan BT-vs-COT sensitivity figure.
+- [x] **MERRA-2 as a second data source (stages 1–6)** — `source` option
+      (config `source:` + `--source` on stages 2–6), per-source trees
+      (`data/<source>/…`, `derived/<source>/…`, `figures/<source>/`),
+      `merra2_download.py` (earthaccess + GES DISC OPeNDAP subsetting,
+      M2I3NPASM 3-hourly instantaneous plev + M2I1NXASM hourly instantaneous
+      sfc, normalize-on-write to ERA5 conventions via
+      `reanlib/io_merra2.py`). Renamed source-agnostic code: `era5lib` →
+      `reanlib`, stage scripts dropped the `era5_` prefix
+      (`daily_inversion.py`, `monthly_stats.py`, …); MOSAiC pairs variables
+      `era5_*` → `rean_*`. RT stages (7/7b/7c/8) remain ERA5-only.
+- [x] **Stage 7c — hourly state-time test** (`statetime_test.py`,
+      `lrt_sim.py prep --pixels-from`): 11Z + 13Z added for
+      2020-01-01, the 12Z 500-pixel set re-simulated at 11Z. Verdict: the
+      11Z analysis matches ALL adjacent hourly accumulations (rmse ~3 W/m²,
+      r ~0.86–0.91), the (11+12)/2 average only halves the 12Z error, and
+      the 12Z analysis fits no window (r ~0.15 even for 12–13Z, which it
+      starts) — clear-sky LW↓ scatter is the synoptic-time (12Z) analysis
+      increment displacing the state off the flux-producing trajectory,
+      not accumulation-window timing (that is only ~3 W/m² rmse). LW↑
+      insensitive (0.5 W/m²) throughout.
 
 ## Next (in rough priority order)
 
@@ -47,12 +67,27 @@ the README. Update this file when a stage lands or a plan changes.
 - [ ] **EarthCARE validation of retrieved cloud properties** — collocate
       PREFIRE footprints with EarthCARE cloud products (MSI M-CLD,
       CPR/ATLID synergy ACM-CAP). Prerequisite: ESA EO account.
-- [ ] **Hourly ERA5 (11+12 UTC) state-time test** — definitive check of
-      the stage-7 clear-sky LW↓ diagnosis: simulate the 11–12Z
-      accumulation window instead of the 12Z instant.
 
 ## Backlog / ideas
 
+- [ ] **MERRA-2 stage 7 (LW fluxes)** — radiation from `M2T1NXRAD`
+      (time-averaged W/m², stamped HH:30 — no `/3600`; `LWGEM` gives LW↑
+      directly, no `strd − str` differencing). First refactor the three
+      duplicated conversion sites (`lrt_sim.py` `cmd_prep`,
+      `mosaic_flux.py`, `case_study.py` — `strd/3600`, `strd − str_net`)
+      into one source-dispatching `surface_lw_fluxes()` helper. 3-D cloud
+      fraction only exists time-averaged (`M2T3NPCLD`, stamps 01:30/04:30/…)
+      — new state-time semantics; the stage-7c framing changes shape
+      (instantaneous state at HH vs mean flux centered HH:30).
+- [ ] **MERRA-2 stage 8 (PREFIRE)** — generalize the hard-coded 6-h snap in
+      `prefire_bt.py` collocation to the source cadence; MERRA-2's 3-hourly
+      plev state would halve the ≤3 h state-time offset listed above.
+- [ ] Generalize the stage-7c finding: repeat the state-time test on more
+      days and around other hours — especially 00Z (the other radiosonde
+      synoptic time; expect the same off-trajectory jump) and the 18–19Z
+      window (fluxes valid 19Z come from the fresh 18Z forecast, step 1) —
+      to separate the synoptic-increment interpretation from a fortuitous
+      trajectory crossing at 11Z on 2020-01-01.
 - [ ] Spectral far-IR snow/ice surface emissivity for stage 8 (currently
       constant ε = 0.99; the far-IR dirty-window K_skt gradient is where it
       matters — this is PREFIRE's own science target).
@@ -76,5 +111,9 @@ the README. Update this file when a stage lands or a plan changes.
 ## Standing constraints
 
 - Run stages under the right conda env (era5 vs er3t_env; see README).
+- Data source: `--source {era5,merra2}` on stages 2–6 (default from
+  config.yaml `source:`); each downloader is pinned to its own source.
+  MERRA-2 needs Earthdata credentials in `~/.netrc`; ERA5 needs
+  `~/.cdsapirc`.
 - `reptran fine`/`medium` never on the local Mac — CURC only.
 - Commits are made locally on request; pushing is done by the user.

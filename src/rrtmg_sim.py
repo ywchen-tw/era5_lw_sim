@@ -2,11 +2,11 @@
 """RRTMG-LW cross-check of the libRadtran LW simulation (stage 7b).
 
 Run under the ``era5`` conda env (needs climlab + climlab-rrtmg; installed via
-conda-forge). Reads the manifest written by ``era5_lrt_sim.py prep`` and reruns
+conda-forge). Reads the manifest written by ``lrt_sim.py prep`` and reruns
 every pixel through climlab's RRTMG_LW — the same radiation-scheme family ERA5
 uses, covering the full 3.08-1000 um range, so no far-IR tail correction is
 needed. Rows are appended to the shared results CSV with simulator
-``rrtmg-lw ...``; ``era5_lrt_sim.py compare`` (under er3t_env) then produces a
+``rrtmg-lw ...``; ``lrt_sim.py compare`` (under er3t_env) then produces a
 three-way libRadtran / RRTMG / ERA5 comparison.
 
 Input identity with the libRadtran runs is guaranteed by parsing the very
@@ -21,8 +21,8 @@ parameterization family: liquid Hu & Stamnes (liqflglw=1, reff 10 um) as
 takes layer means of the level profiles (both sub-W/m2 effects).
 
 Examples:
-    python src/era5_rrtmg_sim.py --year 2020 --month 1 --day 1 --hour 12
-    python src/era5_rrtmg_sim.py --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
+    python src/rrtmg_sim.py --year 2020 --month 1 --day 1 --hour 12
+    python src/rrtmg_sim.py --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import load_config
-from era5_lrt_sim import M_DRY, M_H2O, manifest_path, results_path
+from reanlib.config import load_config
+from lrt_sim import M_DRY, M_H2O, manifest_path, results_path
 
 N2O_PPM = 0.32          # libRadtran default profile is ~this near the surface
 DGE_FROM_REFF = 1.0315  # Fu 1996 generalized effective size from reff
@@ -124,7 +124,7 @@ def run_pixel(prof: dict, manifest: dict, climlab, Axis) -> dict:
     ciwp = cloud_layer_paths(prof["ic_file"], z) if prof.get("ic_file") \
         else np.zeros(p.size - 1)
     if (clwp + ciwp).any():
-        # reff from the manifest (fixed values; see era5_lrt_sim.py). Mind
+        # reff from the manifest (fixed values; see lrt_sim.py). Mind
         # that changing effective radius moves LWdn by up to ~20 W/m2 for
         # optically thin clouds but has almost no effect on thick,
         # emissivity-saturated ones (absorption ~ 1/reff until tau >> 1).
@@ -175,7 +175,7 @@ def main(argv: "list[str] | None" = None) -> int:
     date = dt.date(args.year, args.month, args.day)
     mpath = manifest_path(cfg, date, args.hour, args.sky)
     if not mpath.exists():
-        sys.exit(f"missing {mpath} — run era5_lrt_sim.py prep first "
+        sys.exit(f"missing {mpath} — run lrt_sim.py prep first "
                  f"(with --sky {args.sky})")
     manifest = json.loads(mpath.read_text())
     profiles = manifest["profiles"]

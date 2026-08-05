@@ -10,10 +10,10 @@ its own licence: log in at https://ads.atmosphere.copernicus.eu, accept the
 CAMS licence on the EGG4 dataset page once, and the ~/.cdsapirc token works.
 
 If ADS access is not set up yet, run the LW simulation with constant gases
-instead: era5_lrt_sim.py prep --fallback-constants (CO2 415 ppm, CH4 1.9 ppm).
+instead: lrt_sim.py prep --fallback-constants (CO2 415 ppm, CH4 1.9 ppm).
 
 Examples:
-    python src/era5_cams_download.py --year 2020 --month 1
+    python src/cams_download.py --year 2020 --month 1
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import REPO_ROOT, load_config
+from reanlib.config import REPO_ROOT, load_config
 
 ADS_URL = "https://ads.atmosphere.copernicus.eu/api"
 EGG4_LEVELS = ["1", "2", "3", "5", "7", "10", "20", "30", "50", "70", "100",
@@ -39,7 +39,7 @@ credentials:
      fields" dataset page and accept its licence under "Terms of use"
   3. your ~/.cdsapirc token is reused automatically (the script overrides the
      endpoint URL)
-Until then, use: era5_lrt_sim.py prep --fallback-constants
+Until then, use: lrt_sim.py prep --fallback-constants
 Original error:
 """
 

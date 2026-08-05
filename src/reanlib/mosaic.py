@@ -27,7 +27,7 @@ def load_sounding_month(year: int, month: int):
         return _CACHE[key]
     if key not in SOUNDING_SETS:
         print(f"note: no MOSAiC level-2 sounding file registered for "
-              f"{year}-{month:02d} (era5lib/mosaic.py SOUNDING_SETS)")
+              f"{year}-{month:02d} (reanlib/mosaic.py SOUNDING_SETS)")
         _CACHE[key] = None
         return None
     name, url = SOUNDING_SETS[key]

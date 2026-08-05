@@ -7,8 +7,8 @@ layer shaded and all three metric values annotated, so the derived numbers can
 be checked visually against the raw profile.
 
 Examples:
-    python src/era5_plot_profiles.py --year 2025 --month 1 --day 1 --hour 12
-    python src/era5_plot_profiles.py --year 2025 --month 1 --day 1 --hour 12 --lat 85 --lon -150
+    python src/plot_profiles.py --year 2025 --month 1 --day 1 --hour 12
+    python src/plot_profiles.py --year 2025 --month 1 --day 1 --hour 12 --lat 85 --lon -150
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import figures_dir, inversion_path, load_config, plev_path, sfc_path
-from era5lib.inversion import column_heights
-from era5lib.io_era5 import open_era5
-from era5lib.plotstyle import apply_agu_style, panel_label
+from reanlib.config import figures_dir, inversion_path, load_config, plev_path, sfc_path, source_label
+from reanlib.inversion import column_heights
+from reanlib.io_era5 import open_era5
+from reanlib.plotstyle import apply_agu_style, panel_label
 
 # Okabe-Ito CVD-safe hues; identity is also carried by marker shape + labels.
 C_PROFILE = "#333333"
@@ -65,7 +65,8 @@ def pick_points(inv: "xr.Dataset", how: list[str]) -> list[dict]:
     return points
 
 
-def plot_profile_panel(ax, ds_plev, inv, lat: float, lon: float, label: str) -> None:
+def plot_profile_panel(ax, ds_plev, inv, lat: float, lon: float, label: str,
+                       src_lab: str = "ERA5") -> None:
     col = ds_plev.sel(latitude=lat, longitude=lon, method="nearest")
     ivn = inv.sel(latitude=lat, longitude=lon, method="nearest")
     sp_hpa = float(ivn["sp"]) / 100.0
@@ -86,7 +87,7 @@ def plot_profile_panel(ax, ds_plev, inv, lat: float, lon: float, label: str) -> 
 
     tc = T - 273.15
     ax.plot(tc[show], p[show], "-", color=C_PROFILE, lw=2, zorder=3,
-            label="ERA5 T profile")
+            label=f"{src_lab} T profile")
     for ref_p, m in ((925, "s"), (850, "s")):
         if ref_p <= sp_hpa:
             k = int(np.argmin(np.abs(p - ref_p)))
@@ -153,18 +154,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lat", type=float, default=None,
                         help="plot a single explicit point instead of --points")
     parser.add_argument("--lon", type=float, default=None)
+    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+                        help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--outdir", default=None, help="default: figures/ from config")
     args = parser.parse_args(argv)
 
     apply_agu_style()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     date = dt.date(args.year, args.month, args.day)
     when = np.datetime64(f"{date:%Y-%m-%d}T{args.hour:02d}:00")
 
     inv_file = inversion_path(cfg, date)
     if not inv_file.exists():
-        sys.exit(f"missing {inv_file}\nfix with: python src/era5_inversion.py "
+        sys.exit(f"missing {inv_file}\nfix with: python src/daily_inversion.py "
                  f"--year {date.year} --month {date.month} --days {date.day}")
     inv = open_era5(inv_file).sel(valid_time=when)
     ds_plev = open_era5(plev_path(cfg, date)).sel(valid_time=when)
@@ -179,12 +182,13 @@ def main(argv: list[str] | None = None) -> int:
     n = len(points)
     fig, axes = plt.subplots(1, n, figsize=(4.6 * n, 5.2), squeeze=False)
     for i, (ax, pt) in enumerate(zip(axes[0], points)):
-        plot_profile_panel(ax, ds_plev, inv, pt["lat"], pt["lon"], pt["label"])
+        plot_profile_panel(ax, ds_plev, inv, pt["lat"], pt["lon"], pt["label"],
+                           src_lab=source_label(cfg))
         panel_label(ax, "abcdefgh"[i], x=-0.16, y=1.08)
     axes[0][0].set_ylabel("pressure (hPa)")
     handles, labels = axes[0][0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=3, frameon=False, fontsize=9)
-    fig.suptitle(f"ERA5 temperature profiles & inversion metrics — "
+    fig.suptitle(f"{source_label(cfg)} temperature profiles & inversion metrics — "
                  f"{date:%Y-%m-%d} {args.hour:02d} UTC\n"
                  f"shaded: detected surface-based inversion layer", fontsize=11)
     fig.tight_layout(rect=(0, 0.05, 1, 0.94))

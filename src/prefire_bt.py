@@ -2,7 +2,7 @@
 """PREFIRE-TIRS brightness-temperature simulation from ERA5 columns (stage 8).
 
 Collocates PREFIRE 1B-RAD footprints (data/prefire/, see
-era5_prefire_download.py) with ERA5 analysis columns, simulates the TIRS
+prefire_download.py) with ERA5 analysis columns, simulates the TIRS
 channel spectrum with libRadtran (thermal-source nadir-ish radiance,
 ``reptran fine``), converts to channel brightness temperature with the
 mission SRF files, and cross-checks at band level with RRTMG-LW
@@ -27,12 +27,12 @@ Subcommands / envs:
   figure    (era5 env)     BT spectra vs obs + Jacobian heatmaps
 
 Examples:
-    conda activate era5     && python src/era5_prefire_bt.py collocate --year 2025 --month 1 --sat 1
-    conda activate era5     && python src/era5_prefire_bt.py prep --year 2025 --month 1 --sat 1
-    conda activate er3t_env && python src/era5_prefire_bt.py run --year 2025 --month 1 --sat 1
-    conda activate era5     && python src/era5_prefire_bt.py rrtmg --year 2025 --month 1 --sat 1
-    conda activate er3t_env && python src/era5_prefire_bt.py jacobian --year 2025 --month 1 --sat 1
-    conda activate era5     && python src/era5_prefire_bt.py figure --year 2025 --month 1 --sat 1
+    conda activate era5     && python src/prefire_bt.py collocate --year 2025 --month 1 --sat 1
+    conda activate era5     && python src/prefire_bt.py prep --year 2025 --month 1 --sat 1
+    conda activate er3t_env && python src/prefire_bt.py run --year 2025 --month 1 --sat 1
+    conda activate era5     && python src/prefire_bt.py rrtmg --year 2025 --month 1 --sat 1
+    conda activate er3t_env && python src/prefire_bt.py jacobian --year 2025 --month 1 --sat 1
+    conda activate era5     && python src/prefire_bt.py figure --year 2025 --month 1 --sat 1
 """
 
 from __future__ import annotations
@@ -50,12 +50,12 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import REPO_ROOT, figures_dir, load_config, plev_path, sfc_path
-from era5lib.io_era5 import open_era5
-from era5_lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM,
+from reanlib.config import REPO_ROOT, figures_dir, load_config, monthly_path, plev_path, sfc_path
+from reanlib.io_era5 import open_era5
+from lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM,
                           build_profile_files, load_cams_profiles,
                           write_cloud_file)
-from era5_prefire_download import srf_path
+from prefire_download import srf_path
 
 G0 = 9.80665
 TRAPZ = getattr(np, "trapezoid", getattr(np, "trapz", None))
@@ -78,10 +78,7 @@ DTAU_FRAC = 0.05      # fractional optical-thickness change (cotscan)
 # ---------------------------------------------------------------- paths
 
 def pbt_dir(cfg: dict, year: int, month: int) -> Path:
-    root = Path(cfg["paths"]["derived"])
-    if not root.is_absolute():
-        root = REPO_ROOT / root
-    return root / f"{year:04d}" / f"{month:02d}" / "prefire_bt"
+    return monthly_path(cfg, year, month).parent / "prefire_bt"
 
 
 def collocation_path(cfg, year, month, sat) -> Path:
@@ -185,7 +182,7 @@ def cmd_collocate(args) -> int:
     cfg = load_config(args.config)
     files = granule_files(cfg, args.year, args.month, args.sat)
     if not files:
-        sys.exit("no granules — run era5_prefire_download.py first")
+        sys.exit("no granules — run prefire_download.py first")
     south = float(cfg["area"][2])
     out_dir = pbt_dir(cfg, args.year, args.month)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -343,7 +340,7 @@ def cmd_prep(args) -> int:
 
     spath = srf_path(cfg, args.sat)
     if not spath.exists():
-        sys.exit(f"missing {spath} — run era5_prefire_download.py --srf-only")
+        sys.exit(f"missing {spath} — run prefire_download.py --srf-only")
     srf = load_srf(str(spath))
     wvl_lo_nm, wvl_hi_nm = sim_wvl_range_nm(srf)
     print(f"simulation range {wvl_lo_nm / 1000.0:.2f}-{wvl_hi_nm / 1000.0:.2f} um "
@@ -615,7 +612,7 @@ def cmd_rrtmg(args) -> int:
         from climlab.domain.axis import Axis
     except ImportError:
         sys.exit("climlab not importable — run under the `era5` conda env")
-    from era5_rrtmg_sim import (_BOTTOM_AIR_T, DGE_FROM_REFF, N2O_PPM,
+    from rrtmg_sim import (_BOTTOM_AIR_T, DGE_FROM_REFF, N2O_PPM,
                                 cloud_layer_paths, layer_mean,
                                 patch_interface_temperature, q_from_vmr)
 
@@ -900,7 +897,7 @@ def jacobian_rrtmg(cfg, args, manifest, columns) -> int:
         from climlab.domain.axis import Axis
     except ImportError:
         sys.exit("climlab not importable — run under the `era5` conda env")
-    from era5_rrtmg_sim import (_BOTTOM_AIR_T, DGE_FROM_REFF, N2O_PPM,
+    from rrtmg_sim import (_BOTTOM_AIR_T, DGE_FROM_REFF, N2O_PPM,
                                 cloud_layer_paths, layer_mean,
                                 patch_interface_temperature, q_from_vmr)
 
@@ -1074,7 +1071,7 @@ def cmd_cotscan(args) -> int:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    from era5lib.plotstyle import apply_agu_style, panel_label
+    from reanlib.plotstyle import apply_agu_style, panel_label
     apply_agu_style()
 
     good = good_channels(srf, sc)
@@ -1124,7 +1121,7 @@ def cmd_cotscan(args) -> int:
 def cmd_figure(args) -> int:
     import matplotlib.pyplot as plt
 
-    from era5lib.plotstyle import apply_agu_style, panel_label
+    from reanlib.plotstyle import apply_agu_style, panel_label
 
     cfg = load_config(args.config)
     manifest = json.loads(manifest_path(cfg, args.year, args.month,
@@ -1206,7 +1203,7 @@ def cmd_figure(args) -> int:
 def jacobian_figure(ds, col, sim):
     import matplotlib.pyplot as plt
 
-    from era5lib.plotstyle import panel_label
+    from reanlib.plotstyle import panel_label
 
     kinds = ds["state_kind"].values.astype(str)
     wl = ds["channel_wavelen"].values

@@ -7,14 +7,14 @@
 # derived/YYYY/MM/prefire_bt/ folder (manifest + profile files) to CURC.
 #
 # Usage:  sbatch slurm/curc_prefire_bt.sh 2025 1 1
-#SBATCH --job-name=era5_prefire_bt
+#SBATCH --job-name=prefire_bt
 #SBATCH --partition=amilan
 #SBATCH --account=REPLACE_WITH_ACCOUNT
 #SBATCH --nodes=1
 #SBATCH --ntasks=16
 #SBATCH --mem=64G
 #SBATCH --time=08:00:00
-#SBATCH --output=era5_prefire_bt_%j.out
+#SBATCH --output=prefire_bt_%j.out
 
 module purge
 module load anaconda intel/2022.1.2 hdf5/1.10.1 zlib/1.2.11 netcdf/4.8.1 swig/4.1.1 gsl/2.7
@@ -27,7 +27,7 @@ cd "$REPO"
 
 YEAR=${1:?year}; MONTH=${2:?month}; SAT=${3:-1}
 
-python src/era5_prefire_bt.py run --year "$YEAR" --month "$MONTH" --sat "$SAT" \
+python src/prefire_bt.py run --year "$YEAR" --month "$MONTH" --sat "$SAT" \
     --mol-abs-param fine --workers "$SLURM_NTASKS" --overwrite
-python src/era5_prefire_bt.py jacobian --year "$YEAR" --month "$MONTH" --sat "$SAT" \
+python src/prefire_bt.py jacobian --year "$YEAR" --month "$MONTH" --sat "$SAT" \
     --simulator lrt --mol-abs-param fine --workers "$SLURM_NTASKS"

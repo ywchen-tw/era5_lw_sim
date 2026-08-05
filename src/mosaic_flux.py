@@ -19,9 +19,9 @@ Subcommands / envs:
   figure  (era5 env)     RRTMG-LW inline + drift time series & scatters
 
 Examples:
-    conda activate era5     && python src/era5_mosaic_flux.py prep
-    conda activate er3t_env && python src/era5_mosaic_flux.py run
-    conda activate era5     && python src/era5_mosaic_flux.py figure
+    conda activate era5     && python src/mosaic_flux.py prep
+    conda activate er3t_env && python src/mosaic_flux.py run
+    conda activate era5     && python src/mosaic_flux.py figure
 """
 
 from __future__ import annotations
@@ -37,22 +37,19 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import REPO_ROOT, figures_dir, load_config, plev_path, sfc_path
-from era5lib.io_era5 import open_era5
-from era5_lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM, SIGMA,
+from reanlib.config import REPO_ROOT, figures_dir, load_config, pairs_path, plev_path, sfc_path
+from reanlib.io_era5 import open_era5
+from lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM, SIGMA,
                           WVL_RANGE_NM, build_profile_files,
                           load_cams_profiles, write_cloud_file)
-from era5_case_study import TRAPZ, planck_band_fraction
+from case_study import TRAPZ, planck_band_fraction
 
 G0 = 9.80665
 MOSAIC_FILE = REPO_ROOT / "data" / "mosaic" / "MOSAiC_Atm_Properties.nc"
 
 
 def mflux_dir(cfg: dict, year: int, month: int) -> Path:
-    root = Path(cfg["paths"]["derived"])
-    if not root.is_absolute():
-        root = REPO_ROOT / root
-    return root / f"{year:04d}" / f"{month:02d}" / "mosaic_flux"
+    return pairs_path(cfg, year, month).parent / "mosaic_flux"
 
 
 def manifest_path(cfg, year, month) -> Path:
@@ -70,15 +67,13 @@ def cmd_prep(args) -> int:
     import xarray as xr
 
     cfg = load_config(args.config)
-    pairs = xr.open_dataset(
-        REPO_ROOT / "derived" / f"{args.year}" / f"{args.month:02d}" /
-        f"era5_mosaic_pairs_{args.year}{args.month:02d}.nc")
+    pairs = xr.open_dataset(pairs_path(cfg, args.year, args.month))
     mos = xr.open_dataset(MOSAIC_FILE)
     out_dir = mflux_dir(cfg, args.year, args.month)
     out_dir.mkdir(parents=True, exist_ok=True)
     cams = load_cams_profiles(args.year, args.month)
     if cams is None:
-        sys.exit("no CAMS file — run src/era5_cams_download.py first")
+        sys.exit("no CAMS file — run src/cams_download.py first")
 
     # group soundings by (ERA5 time, pixel): one simulation per key
     cache = {}
@@ -286,9 +281,9 @@ def cmd_figure(args) -> int:
     import matplotlib.pyplot as plt
     import climlab
     from climlab.domain.axis import Axis
-    import era5_rrtmg_sim as R
+    import rrtmg_sim as R
 
-    from era5lib.plotstyle import apply_agu_style, panel_label
+    from reanlib.plotstyle import apply_agu_style, panel_label
 
     cfg = load_config(args.config)
     manifest = json.loads(manifest_path(cfg, args.year, args.month).read_text())

@@ -4,13 +4,13 @@
 # account/partition and the REPO path to your CURC layout before submitting.
 #
 # Usage:  sbatch slurm/curc_lrt_sim.sh 2020 1 1 12
-#SBATCH --job-name=era5_lrt_sim
+#SBATCH --job-name=lrt_sim
 #SBATCH --partition=amilan
 #SBATCH --account=REPLACE_WITH_ACCOUNT
 #SBATCH --nodes=1
 #SBATCH --ntasks=16
 #SBATCH --time=04:00:00
-#SBATCH --output=era5_lrt_sim_%j.out
+#SBATCH --output=lrt_sim_%j.out
 
 module purge
 module load anaconda intel/2022.1.2 hdf5/1.10.1 zlib/1.2.11 netcdf/4.8.1 swig/4.1.1 gsl/2.7
@@ -23,7 +23,7 @@ cd "$REPO"
 
 YEAR=${1:?year}; MONTH=${2:?month}; DAY=${3:?day}; HOUR=${4:?hour}
 
-python src/era5_lrt_sim.py prep --year "$YEAR" --month "$MONTH" --day "$DAY" --hour "$HOUR"
-python src/era5_lrt_sim.py run  --year "$YEAR" --month "$MONTH" --day "$DAY" --hour "$HOUR" \
+python src/lrt_sim.py prep --year "$YEAR" --month "$MONTH" --day "$DAY" --hour "$HOUR"
+python src/lrt_sim.py run  --year "$YEAR" --month "$MONTH" --day "$DAY" --hour "$HOUR" \
     --streams 8 --mol-abs-param fine --workers "$SLURM_NTASKS"
-python src/era5_lrt_sim.py compare --year "$YEAR" --month "$MONTH" --day "$DAY" --hour "$HOUR"
+python src/lrt_sim.py compare --year "$YEAR" --month "$MONTH" --day "$DAY" --hour "$HOUR"

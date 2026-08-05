@@ -15,8 +15,8 @@ Monthly per-grid-point statistics:
   dt_850_2m_mean, dt_925_1000_mean   means over unmasked time steps
 
 Examples:
-    python src/era5_monthly.py --year 2020 --month 1
-    python src/era5_monthly.py --year 2020 --month 1 --days 1-7 --skip-missing
+    python src/monthly_stats.py --year 2020 --month 1
+    python src/monthly_stats.py --year 2020 --month 1 --days 1-7 --skip-missing
 """
 
 from __future__ import annotations
@@ -36,23 +36,16 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from era5lib.config import REPO_ROOT, figures_dir, inversion_path, load_config
-from era5lib.io_era5 import open_era5
-from era5lib.mapping import polar_panel
-from era5lib.plotstyle import apply_agu_style, panel_label
+from reanlib.config import figures_dir, inversion_path, load_config, monthly_path, source_label
+from reanlib.io_era5 import open_era5
+from reanlib.mapping import polar_panel
+from reanlib.plotstyle import apply_agu_style, panel_label
 
 STRENGTH_BINS = np.arange(0.0, 25.5, 0.5)    # K
 DEPTH_BINS = np.arange(0.0, 2050.0, 50.0)    # m
 
 
-def monthly_path(cfg: dict, year: int, month: int) -> Path:
-    root = Path(cfg["paths"]["derived"])
-    if not root.is_absolute():
-        root = REPO_ROOT / root
-    return root / f"{year:04d}" / f"{month:02d}" / f"era5_inversion_monthly_{year:04d}{month:02d}.nc"
-
-
-def aggregate(files: list[Path]) -> xr.Dataset:
+def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
     """Stream the daily files, accumulating monthly statistics."""
     sums: dict[str, np.ndarray] = {}
     hist_strength = np.zeros(STRENGTH_BINS.size - 1)
@@ -147,7 +140,8 @@ def aggregate(files: list[Path]) -> xr.Dataset:
     for name, unit in units.items():
         out[name].attrs["units"] = unit
     out.attrs = {
-        "title": "Monthly ERA5 Arctic temperature-inversion statistics",
+        "title": f"Monthly {label} Arctic temperature-inversion statistics",
+        "source_label": label,
         "n_time_steps": n_time,
         "n_days": len(files),
         "note": ("area statistics cos(latitude)-weighted; *_cond over detected "
@@ -178,7 +172,7 @@ def fig_maps(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
                     cbar_label=label, **kw)
         panel_label(axes[i], "abcdefgh"[i], x=-0.02, y=1.05)
     axes[-1].set_visible(False)
-    fig.suptitle(f"ERA5 monthly temperature-inversion statistics — "
+    fig.suptitle(f"{out.attrs.get('source_label', 'ERA5')} monthly temperature-inversion statistics — "
                  f"{calendar.month_name[month]} {year} — gray: no data / below ground",
                  y=0.99)
     path = outdir / f"monthly_maps_{year:04d}{month:02d}.png"
@@ -265,13 +259,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="subset of days (default: whole month)")
     parser.add_argument("--skip-missing", action="store_true",
                         help="aggregate whatever daily files exist")
+    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+                        help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no-figures", action="store_true")
     args = parser.parse_args(argv)
 
     apply_agu_style()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     ndays = calendar.monthrange(args.year, args.month)[1]
     tokens = args.days if args.days else [f"1-{ndays}"]
     days = parse_days(tokens, args.year, args.month)
@@ -282,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         (files if p.exists() else missing).append(p)
     if missing and not args.skip_missing:
         sys.exit(f"missing {len(missing)} daily file(s), first: {missing[0]}\n"
-                 f"fix with: python src/era5_inversion.py --year {args.year} "
+                 f"fix with: python src/daily_inversion.py --year {args.year} "
                  f"--month {args.month} --days 1-{ndays}\n"
                  f"or rerun with --skip-missing to aggregate the "
                  f"{len(files)} available day(s)")
@@ -296,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{target} exists, loading it (use --overwrite to recompute)")
         out = open_era5(target)
     else:
-        out = aggregate(files)
+        out = aggregate(files, source_label(cfg))
         target.parent.mkdir(parents=True, exist_ok=True)
         out.to_netcdf(target, encoding={v: {"zlib": True, "complevel": 4}
                                         for v in out.data_vars})

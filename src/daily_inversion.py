@@ -3,12 +3,12 @@
 
 Reads data/YYYY/MM/DD/era5_{plev,sfc}_YYYYMMDD.nc and writes
 derived/YYYY/MM/DD/era5_inversion_YYYYMMDD.nc with SBI (profile scan),
-dt_850_2m and dt_925_1000 metrics. See era5lib/inversion.py for definitions
+dt_850_2m and dt_925_1000 metrics. See reanlib/inversion.py for definitions
 and references.
 
 Examples:
-    python src/era5_inversion.py --year 2025 --month 1 --days 1
-    python src/era5_inversion.py --year 2025 --month 1 --days 1-7 --check
+    python src/daily_inversion.py --year 2025 --month 1 --days 1
+    python src/daily_inversion.py --year 2025 --month 1 --days 1-7 --check
 """
 
 from __future__ import annotations
@@ -22,9 +22,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from era5lib.config import inversion_path, load_config, plev_path, sfc_path
-from era5lib.inversion import compute_inversion_dataset
-from era5lib.io_era5 import open_era5
+from reanlib.config import inversion_path, load_config, plev_path, sfc_path
+from reanlib.inversion import compute_inversion_dataset
+from reanlib.io_era5 import open_era5
 
 
 def check_report(ds) -> str:
@@ -60,13 +60,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="day numbers and/or A-B ranges, e.g. 1 2 5-7")
     parser.add_argument("--hours", type=int, nargs="+", default=None,
                         help="subset of UTC hours (default: all in the file)")
+    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+                        help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None, help="path to config.yaml")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--check", action="store_true",
                         help="print physical-plausibility summary per day")
     args = parser.parse_args(argv)
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     for day in parse_days(args.days, args.year, args.month):
         date = dt.date(args.year, args.month, day)
         target = inversion_path(cfg, date)

@@ -1,46 +1,59 @@
-# ERA5 Arctic Temperature-Inversion Pipeline
+# Arctic Temperature-Inversion Pipeline (ERA5 / MERRA-2)
 
-Automated pipeline that downloads ERA5 reanalysis data over the Arctic
-(80–90°N by default), computes temperature-inversion strength with three
-metrics, aggregates monthly climatologies, analyzes profile variability (PCA)
-and surface-temperature relationships, validates against MOSAiC radiosondes,
-and simulates clear-sky broadband LW fluxes with libRadtran for comparison
-with ERA5 radiation — with AGU-style figures at every stage.
+Automated pipeline that downloads reanalysis data over the Arctic (80–90°N by
+default) from **ERA5** (Copernicus CDS) or **MERRA-2** (NASA GES DISC),
+computes temperature-inversion strength with three metrics, aggregates
+monthly climatologies, analyzes profile variability (PCA) and
+surface-temperature relationships, validates against MOSAiC radiosondes, and
+simulates clear-sky broadband LW fluxes with libRadtran for comparison with
+ERA5 radiation — with AGU-style figures at every stage.
+
+The data source is selected with `source:` in `config.yaml` or `--source
+{era5,merra2}` on any analysis stage (see "Data sources" below). The
+radiative-transfer stages (7, 7b, 7c, 8) currently run on ERA5 only.
 
 ## Workflow at a glance
 
 ![Pipeline workflow](docs/workflow.png)
 
-Regenerate with `python src/era5_workflow_chart.py`.
+Regenerate with `python src/workflow_chart.py`.
 
 ## Repository layout
 
 ```
 era5_analysis/
-├── config.yaml                  # user-editable defaults (area, variables, SBI params, paths)
+├── config.yaml                  # user-editable defaults (source, area, variables, SBI params, paths)
 ├── environment.yml              # conda env "era5"
 ├── src/
-│   ├── era5_download.py         # stage 1: CDS downloads (parallel, idempotent)
-│   ├── era5_inversion.py        # stage 2: daily inversion metrics
-│   ├── era5_plot_profiles.py    # stage 3a: profile illustration figures
-│   ├── era5_plot_maps.py        # stage 3b: polar snapshot maps
-│   ├── era5_monthly.py          # stage 4: monthly statistics + figures
-│   ├── era5_profile_analysis.py # stage 5: profile PCA, surface-T, correlations
-│   ├── era5_mosaic_compare.py   # stage 6: ERA5 vs MOSAiC radiosondes
-│   ├── era5_cams_download.py    # CAMS EGG4 CO2/CH4 profiles (for stage 7)
-│   ├── era5_lrt_sim.py          # stage 7: libRadtran LW fluxes vs ERA5 (er3t_env!)
-│   ├── era5_rrtmg_sim.py        # stage 7b: RRTMG-LW cross-check via climlab (era5 env)
-│   ├── era5_case_study.py       # MOSAiC clear/cloudy single-pixel walkthrough figures
-│   ├── era5_mosaic_flux.py      # LW simulation at every MOSAiC-matched column
-│   └── era5lib/                 # shared code: config, CDS I/O, science, maps, style
-├── slurm/                       # CURC job templates (stage 7)
-├── data/YYYY/MM/DD/             # raw ERA5: era5_{plev,sfc}_YYYYMMDD.nc
+│   ├── era5_download.py         # stage 1 (ERA5): CDS downloads (parallel, idempotent)
+│   ├── merra2_download.py       # stage 1 (MERRA-2): GES DISC OPeNDAP subsets
+│   ├── daily_inversion.py       # stage 2: daily inversion metrics
+│   ├── plot_profiles.py         # stage 3a: profile illustration figures
+│   ├── plot_maps.py             # stage 3b: polar snapshot maps
+│   ├── monthly_stats.py         # stage 4: monthly statistics + figures
+│   ├── profile_analysis.py      # stage 5: profile PCA, surface-T, correlations
+│   ├── mosaic_compare.py        # stage 6: reanalysis vs MOSAiC radiosondes
+│   ├── cams_download.py         # CAMS EGG4 CO2/CH4 profiles (for stage 7)
+│   ├── lrt_sim.py               # stage 7: libRadtran LW fluxes vs ERA5 (er3t_env!)
+│   ├── rrtmg_sim.py             # stage 7b: RRTMG-LW cross-check via climlab (era5 env)
+│   ├── statetime_test.py        # stage 7c: snapshot vs accumulation-window test
+│   ├── case_study.py            # MOSAiC clear/cloudy single-pixel walkthrough figures
+│   ├── mosaic_flux.py           # LW simulation at every MOSAiC-matched column
+│   ├── prefire_download.py      # PREFIRE TIRS granules + SRFs (stage 8)
+│   ├── prefire_bt.py            # stage 8: PREFIRE BT simulation + Jacobians
+│   └── reanlib/                 # shared code: config, per-source I/O, science, maps, style
+├── slurm/                       # CURC job templates (stages 7/8)
+├── data/<source>/YYYY/MM/DD/    # raw daily files: <source>_{plev,sfc}_YYYYMMDD.nc
 ├── data/mosaic/                 # MOSAiC observations (PANGAEA download)
 ├── data/cams/                   # CAMS EGG4 greenhouse-gas profiles
-├── derived/YYYY/MM/DD/          # daily metrics + lw_sim/ (profiles, manifest, results)
-├── derived/YYYY/MM/             # monthly products (stats, PCA, MOSAiC pairs)
-└── figures/
+├── data/prefire/                # PREFIRE TIRS granules + spectral-response files
+├── derived/<source>/YYYY/MM/DD/ # daily metrics + lw_sim/ (profiles, manifest, results)
+├── derived/<source>/YYYY/MM/    # monthly products (stats, PCA, MOSAiC pairs)
+└── figures/<source>/
 ```
+
+(`<source>` is `era5` or `merra2`. The repo directory and conda env keep the
+historical name "era5"; the pipeline itself is source-agnostic.)
 
 ## Setup
 
@@ -61,29 +74,80 @@ The token is shown at <https://cds.climate.copernicus.eu/profile> (see
 licence terms on each ERA5 dataset's download page once, or requests are
 rejected.
 
+For MERRA-2 (and PREFIRE), NASA Earthdata credentials are required instead:
+register at <https://urs.earthdata.nasa.gov>, add to `~/.netrc`
+
+```
+machine urs.earthdata.nasa.gov login <username> password <password>
+```
+
+(`chmod 600 ~/.netrc`), and authorize the "NASA GESDISC DATA ARCHIVE"
+application once under Earthdata Applications → Authorized Apps.
+
+## Data sources
+
+Two interchangeable reanalysis sources; pick with `source:` in `config.yaml`
+(default `era5`) or per run with `--source` on stages 2–6:
+
+| | ERA5 | MERRA-2 |
+|---|---|---|
+| Downloader | `src/era5_download.py` (CDS) | `src/merra2_download.py` (GES DISC) |
+| Profiles | hourly analysis, 37 levels, 0.25° | `M2I3NPASM`: 3-hourly instantaneous, 42 levels, 0.5°×0.625° |
+| Surface | hourly analysis | `M2I1NXASM`: hourly instantaneous |
+| Below-ground levels | extrapolated values | fill values (NaN) |
+| Preliminary data | ERA5T (`expver 0005`), warned | none (GES DISC latency ~3–4 weeks) |
+
+MERRA-2 granules are subset server-side over OPeNDAP (only the 80–90°N band
+is transferred) and normalized on write to the ERA5 variable/coordinate
+conventions (`t/q/o3/clwc/ciwc`, `t2m/skt/sp`, coords
+`valid_time/latitude/longitude/pressure_level` in hPa, surface-first) — see
+`src/reanlib/io_merra2.py`. Downstream stages therefore run unchanged.
+MERRA-2 notes:
+
+- Both selected collections are **instantaneous**, so surface and profile
+  describe the same instant (the time-averaged `M2T1NXSLV`/`M2T1NXRAD`
+  collections, stamped at HH:30, are deliberately not used for the state).
+- The default hours `[0, 6, 12, 18]` work for both sources; MERRA-2 hours
+  must be multiples of 3 (M2I3NPASM cadence).
+- MERRA-2's 42 levels include 1000/925/850 hPa (the fixed-metric levels) with
+  the same ~25 hPa boundary-layer spacing as ERA5, so the SBI scan parameters
+  carry over unchanged.
+- Because MERRA-2 fills (rather than extrapolates) levels near or below the
+  surface, `dt_925_1000` is NaN not only where sp < 1000 hPa but wherever
+  MERRA-2 masks the 1000 hPa level itself — its coverage is noticeably
+  smaller than ERA5's.
+- On the coarser MERRA-2 grid, MOSAiC match distances roughly double
+  (~30 km at 85°N vs ~14 km for ERA5) — interpretation, not an error.
+- The radiative-transfer stages (7, 7b, 7c, 8) are ERA5-only for now: MERRA-2
+  surface radiation lives in the time-averaged `M2T1NXRAD` collection (W/m²,
+  not ERA5-style J/m² accumulations) and 3-D cloud fraction only in the
+  time-averaged `M2T3NPCLD` — see PLAN_TODO for the planned extension.
+
 ## Usage
 
 ```bash
 # 1. download pressure-level + single-level data (one request per day per dataset)
 python src/era5_download.py --year 2020 --month 1 --days 1-31 --jobs 6
+#    ... or the same days from MERRA-2 (add --source merra2 to stages 2-6 below)
+python src/merra2_download.py --year 2020 --month 1 --days 1-31 --jobs 4
 
 # 2. compute daily inversion metrics
-python src/era5_inversion.py --year 2020 --month 1 --days 1-31 --check
+python src/daily_inversion.py --year 2020 --month 1 --days 1-31 --check
 
 # 3a. profile illustrations for one snapshot (strongest / median / weakest points)
-python src/era5_plot_profiles.py --year 2020 --month 1 --day 1 --hour 12
+python src/plot_profiles.py --year 2020 --month 1 --day 1 --hour 12
 
 # 3b. polar-stereographic inversion-strength maps for one snapshot
-python src/era5_plot_maps.py --year 2020 --month 1 --day 1 --hour 12
+python src/plot_maps.py --year 2020 --month 1 --day 1 --hour 12
 
 # 4. monthly aggregation: stats netCDF + map/distribution/time-series figures
-python src/era5_monthly.py --year 2020 --month 1
+python src/monthly_stats.py --year 2020 --month 1
 
 # 5. profile PCA, surface-T statistics, strength correlations (maps + figures)
-python src/era5_profile_analysis.py --year 2020 --month 1
+python src/profile_analysis.py --year 2020 --month 1
 
 # 6. sounding-by-sounding comparison against MOSAiC radiosondes
-python src/era5_mosaic_compare.py --year 2020 --month 1
+python src/mosaic_compare.py --year 2020 --month 1
 ```
 
 - All stages are idempotent: existing complete files are skipped
@@ -95,12 +159,15 @@ python src/era5_mosaic_compare.py --year 2020 --month 1
   `--dry-run` prints the CDS requests without downloading. Requests mixing
   instantaneous and accumulated variables are delivered by the CDS as zips of
   per-stream netCDFs; the script merges them into one netCDF automatically.
+- `merra2_download.py` mirrors the same CLI (`--jobs`, `--dry-run`,
+  `--force`, hour-merging idempotency). `--full-granule` downloads whole
+  ~1.5 GB granules and subsets locally if OPeNDAP misbehaves.
 - Stage 6 needs `data/mosaic/MOSAiC_Atm_Properties.nc`; fetch it once with
   `curl -L -o data/mosaic/MOSAiC_Atm_Properties.nc
   https://download.pangaea.de/dataset/957760/files/MOSAiC_Atm_Properties.nc`.
 - All-domain statistics are cos(latitude) area-weighted. Figures follow AGU
   style (Arial, ≥8 pt, 300 dpi, (a)/(b)/(c) panel labels) via
-  `src/era5lib/plotstyle.py`.
+  `src/reanlib/plotstyle.py`.
 
 ## Metric definitions & references
 
@@ -201,7 +268,21 @@ expedition drifting at 85–88.6°N inside the domain (final ERA5, `expver 0001`
   −10.7 ± 11.7 W/m² while LW↑ moves only ±0.9 — reproducing the observed
   LW↓/LW↑ error asymmetry. Cloud-edge proximity and `strd` spatial-gradient
   tests came back null (|r| ≈ 0.1), ruling out radiation-grid smearing as the
-  dominant term. Cloudy (overcast, ERA5 clwc/ciwc as wc/ic files): LW↓
+  dominant term. The hourly state-time test (stage 7c,
+  `lw_statetime_20200101T12Z.png`; the same 500 pixels re-simulated at 11 UTC)
+  settled it: the 11 UTC analysis reproduces the 11–12Z accumulation nearly
+  exactly (bias +0.06, rmse 3.5 W/m², r = +0.86; RRTMG agrees), the
+  trapezoidal (11Z+12Z)/2 average only halves the error (rmse 6.6, r = 0.52),
+  and the 12 UTC analysis fits **no** adjacent window — not even the 12–13Z
+  accumulation it starts (r = 0.15). Cross-window, the 11Z state is
+  radiatively consistent with all three hourly accumulations (rmse ≈ 3 W/m²,
+  the size of ERA5's own window-to-window flux evolution), so the clear-sky
+  LW↓ scatter is not accumulation-window timing: the 12 UTC analysis state
+  itself sits off the flux-producing model trajectory (12 UTC is the synoptic
+  observation time — the radiosonde/satellite increment moves T/q away from
+  the trajectory the radiation scheme integrated, by +5.5 ± 10 W/m² in LW↓
+  equivalent), while the off-synoptic 11 UTC analysis stays on it. LW↑ is
+  insensitive throughout (rmse 0.5 W/m²) — the asymmetry again. Cloudy (overcast, ERA5 clwc/ciwc as wc/ic files): LW↓
   r = 0.947 (bias +1.3, rmse 6.2 W/m², widest for thin clouds), LW↑ r = 0.983
   (bias+tail −1.3 W/m²); RRTMG's cloudy LW↓ runs ~+5.8 W/m² above
   libRadtran+tail from cloud-optics parameterization differences. Extending
@@ -218,19 +299,52 @@ importable and `$LIBRADTRAN_V2_DIR` set), not the `era5` env.
 ```bash
 conda activate er3t
 # one-time: CAMS EGG4 CO2/CH4 monthly profiles (ADS licence required; see --help)
-python src/era5_cams_download.py --year 2020 --month 1
+python src/cams_download.py --year 2020 --month 1
 
-python src/era5_lrt_sim.py prep    --year 2020 --month 1 --day 1 --hour 12   # 5 clear pixels across SBI range
-python src/era5_lrt_sim.py run     --year 2020 --month 1 --day 1 --hour 12   # uvspec thermal jobs
-python src/era5_lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12   # table + figure
+python src/lrt_sim.py prep    --year 2020 --month 1 --day 1 --hour 12   # 5 clear pixels across SBI range
+python src/lrt_sim.py run     --year 2020 --month 1 --day 1 --hour 12   # uvspec thermal jobs
+python src/lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12   # table + figure
 
 # cloudy mode: 5 near-overcast pixels (liquid/ice/mixed/thin/thick when
 # available); ERA5 clwc/ciwc become 1D wc/ic cloud files with fixed effective
 # radii (liquid 10 um via Hu & Stamnes, ice 25 um via Fu)
-python src/era5_lrt_sim.py prep    --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
-python src/era5_lrt_sim.py run     --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
-python src/era5_lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
+python src/lrt_sim.py prep    --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
+python src/lrt_sim.py run     --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
+python src/lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
 ```
+
+### Stage 7c: state-time test (snapshot vs accumulation window)
+
+Re-simulates an existing manifest's exact pixel set at neighboring hours
+(`prep --pixels-from`) and compares three estimators of the hourly ERA5
+accumulation — the window-end snapshot, the window-start snapshot, and their
+trapezoidal average — plus a cross-window table that separates
+accumulation-window *timing* from analysis-*state* effects. Needs the extra
+hours downloaded and the day's inversions recomputed first:
+
+```bash
+conda activate era5
+python src/era5_download.py  --year 2020 --month 1 --days 1 --hours 11 13
+python src/daily_inversion.py --year 2020 --month 1 --days 1 --overwrite
+
+conda activate er3t_env      # 11Z: full simulation on the 12Z pixel set
+python src/lrt_sim.py prep --year 2020 --month 1 --day 1 --hour 11 --n 500 \
+    --pixels-from derived/2020/01/01/lw_sim/manifest_20200101T12Z.json
+python src/lrt_sim.py run  --year 2020 --month 1 --day 1 --hour 11
+# 13Z: prep only — its manifest supplies the 12-13Z accumulation + cloud state
+python src/lrt_sim.py prep --year 2020 --month 1 --day 1 --hour 13 --n 500 \
+    --pixels-from derived/2020/01/01/lw_sim/manifest_20200101T12Z.json
+
+conda activate era5
+python src/rrtmg_sim.py      --year 2020 --month 1 --day 1 --hour 11
+python src/statetime_test.py --year 2020 --month 1 --day 1 --hour 12
+```
+
+Pixels that are no longer cloud-free at the earlier hour are excluded from
+the headline statistics (their accumulation contains cloudy radiation) and
+reported separately. Note the extra downloaded hours become part of the
+daily netCDFs — harmless for the idempotent stages, but rerunning
+`monthly_stats.py --force` afterwards would weight that day's extra hours.
 
 Cost: ~1.4 s per clear pixel and ~4 s per cloudy pixel serially on the local
 Mac (reptran coarse, 4 streams); jobs parallelize across `--workers`.
@@ -256,7 +370,10 @@ template. Caveats printed with every comparison: ERA5's RRTMG-LW extends to
 simulation misses the far-IR >100 µm tail (~1.5–2 W/m² at Arctic winter
 temperatures; an analytic estimate is reported), and ERA5 fluxes are
 1-h accumulations while the simulation is instantaneous — residual cloud
-within the accumulation hour shows up as ERA5 > simulation in LWdn.
+within the accumulation hour shows up as ERA5 > simulation in LWdn. (The
+stage-7c test bounds the pure window-timing effect at ~3 W/m² rmse for
+clear-sky LW↓; the large 12 UTC scatter is the synoptic-time analysis
+state, see the January 2020 results above.)
 
 The `compare` figure annotates the far-IR tail equation
 (tail = [1 − F_band(T)]·εσT⁴ with F_band the fractional blackbody emissive
@@ -266,7 +383,7 @@ T = (LW↓_ERA5/σ)^¼, ε = 1 for LW↓) and shows the surface blackbody estima
 
 ## RRTMG-LW cross-check (stage 7b)
 
-`src/era5_rrtmg_sim.py` reruns every pixel of an existing manifest through
+`src/rrtmg_sim.py` reruns every pixel of an existing manifest through
 RRTMG-LW — the same radiation-scheme family ERA5's IFS uses, covering the
 full 3.08–1000 µm range (no far-IR tail correction needed) — via
 [climlab](https://climlab.readthedocs.io) + climlab-rrtmg (conda-forge).
@@ -275,11 +392,11 @@ installed there), not `er3t_env`:
 
 ```bash
 conda activate era5
-python src/era5_rrtmg_sim.py --year 2020 --month 1 --day 1 --hour 12
-python src/era5_rrtmg_sim.py --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
+python src/rrtmg_sim.py --year 2020 --month 1 --day 1 --hour 12
+python src/rrtmg_sim.py --year 2020 --month 1 --day 1 --hour 12 --sky cloudy
 # then regenerate the (now three-way) comparison under er3t_env:
 conda activate er3t_env
-python src/era5_lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12
+python src/lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12
 ```
 
 Input identity with the uvspec runs is guaranteed by parsing the same profile
@@ -295,7 +412,7 @@ in under 2 s).
 Implementation note: climlab's wrapper sets the bottom interface temperature
 to the *skin* temperature, which leaks skt into the lowest air layer's
 emission and adds several W/m² of spurious LW↓ error under strong surface
-inversions; `era5_rrtmg_sim.py` patches it to the surface *air* temperature
+inversions; `rrtmg_sim.py` patches it to the surface *air* temperature
 (t2m), matching libRadtran and ERA5's own use of RRTMG. Remaining documented
 input differences: N2O constant 0.32 ppm (libRadtran uses its default
 profile) and per-layer means vs level profiles — a ×4 sublayer-refinement
@@ -308,7 +425,7 @@ ERA5 137-model-level profiles to quantify the 37-pressure-level truncation.
 
 ## MOSAiC case study (single-pixel walkthrough)
 
-`src/era5_case_study.py` picks the best clear-sky and overcast ERA5 pixels
+`src/case_study.py` picks the best clear-sky and overcast ERA5 pixels
 among the MOSAiC-matched soundings and produces one 4-panel figure per case
 (`figures/case_study_{clear,cloudy}_*.png`): (a) ERA5 profile vs the full
 MOSAiC level-2 radiosonde profile (Maturilli et al. 2021,
@@ -321,9 +438,9 @@ afglsw splice, level bookkeeping, solver settings, collocation), and
 both the ERA5 flux and the MOSAiC surface radiometer observation.
 
 ```bash
-conda activate era5     && python src/era5_case_study.py prep
-conda activate er3t_env && python src/era5_case_study.py run
-conda activate era5     && python src/era5_case_study.py figure
+conda activate era5     && python src/case_study.py prep
+conda activate er3t_env && python src/case_study.py run
+conda activate era5     && python src/case_study.py figure
 ```
 
 Jan 2020 picks — clear: 2020-01-21 18 UTC (87.50°N, 95.75°E; ERA5 SBI 7.1 K
@@ -337,7 +454,7 @@ not closure against reality).
 
 ## MOSAiC drift flux simulation (all matched columns)
 
-`src/era5_mosaic_flux.py` (prep/run/figure, same env split as the case
+`src/mosaic_flux.py` (prep/run/figure, same env split as the case
 study) extends the walkthrough to **every** ERA5 column matched to a MOSAiC
 sounding — 123 unique (pixel, 6-h time) columns in January 2020. Each column
 is simulated twice (clear-sky, and overcast plane-parallel wherever ERA5
@@ -361,7 +478,7 @@ cloud state along the drift, not radiative transfer.
 
 ![PREFIRE workflow](docs/workflow_prefire.png)
 
-`src/era5_prefire_download.py` (era5 env) fetches PREFIRE TIRS L1B spectral
+`src/prefire_download.py` (era5 env) fetches PREFIRE TIRS L1B spectral
 radiance granules (`PREFIRE_SATx_1B-RAD` R01, NASA ASDC via `earthaccess`;
 Earthdata login in `~/.netrc`) and the TIRS spectral-response files (v13,
 Zenodo record 16638853 — the version the R01 calibration used). PREFIRE
@@ -369,15 +486,15 @@ observes to ~83.8°N, so the overlap with the 80–90°N domain is the
 80–83.8°N band; viewing zenith angles are 5–16°, and each of the 8
 cross-track scenes has its own wavelength registration.
 
-`src/era5_prefire_bt.py` runs the stage:
+`src/prefire_bt.py` runs the stage:
 
 ```
-conda activate era5     && python src/era5_prefire_bt.py collocate --year 2025 --month 1 --sat 1
-conda activate era5     && python src/era5_prefire_bt.py prep      --year 2025 --month 1 --sat 1
-conda activate er3t_env && python src/era5_prefire_bt.py run       --year 2025 --month 1 --sat 1
-conda activate era5     && python src/era5_prefire_bt.py rrtmg     --year 2025 --month 1 --sat 1
-conda activate er3t_env && python src/era5_prefire_bt.py jacobian  --year 2025 --month 1 --sat 1 --simulator lrt
-conda activate era5     && python src/era5_prefire_bt.py figure    --year 2025 --month 1 --sat 1
+conda activate era5     && python src/prefire_bt.py collocate --year 2025 --month 1 --sat 1
+conda activate era5     && python src/prefire_bt.py prep      --year 2025 --month 1 --sat 1
+conda activate er3t_env && python src/prefire_bt.py run       --year 2025 --month 1 --sat 1
+conda activate era5     && python src/prefire_bt.py rrtmg     --year 2025 --month 1 --sat 1
+conda activate er3t_env && python src/prefire_bt.py jacobian  --year 2025 --month 1 --sat 1 --simulator lrt
+conda activate era5     && python src/prefire_bt.py figure    --year 2025 --month 1 --sat 1
 ```
 
 - **collocate** maps every good-quality footprint to its ERA5 0.25° cell and

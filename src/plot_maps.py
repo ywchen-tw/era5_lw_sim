@@ -2,8 +2,8 @@
 """Polar-stereographic maps of inversion strength for one time snapshot.
 
 Examples:
-    python src/era5_plot_maps.py --year 2025 --month 1 --day 1 --hour 12
-    python src/era5_plot_maps.py --year 2025 --month 1 --day 1 --hour 12 --metrics sbi
+    python src/plot_maps.py --year 2025 --month 1 --day 1 --hour 12
+    python src/plot_maps.py --year 2025 --month 1 --day 1 --hour 12 --metrics sbi
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import figures_dir, inversion_path, load_config
-from era5lib.io_era5 import open_era5
-from era5lib.mapping import polar_panel
-from era5lib.plotstyle import apply_agu_style, panel_label
+from reanlib.config import figures_dir, inversion_path, load_config, source_label
+from reanlib.io_era5 import open_era5
+from reanlib.mapping import polar_panel
+from reanlib.plotstyle import apply_agu_style, panel_label
 
 # metric key -> (variable, title, colormap kind)
 METRICS = {
@@ -49,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hour", type=int, required=True)
     parser.add_argument("--metrics", nargs="+", default=["sbi", "dt850", "dt925"],
                         choices=list(METRICS))
+    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+                        help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--outdir", default=None, help="default: figures/ from config")
     args = parser.parse_args(argv)
@@ -56,13 +58,13 @@ def main(argv: list[str] | None = None) -> int:
     import cartopy.crs as ccrs
 
     apply_agu_style()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     date = dt.date(args.year, args.month, args.day)
     when = np.datetime64(f"{date:%Y-%m-%d}T{args.hour:02d}:00")
 
     inv_file = inversion_path(cfg, date)
     if not inv_file.exists():
-        sys.exit(f"missing {inv_file}\nfix with: python src/era5_inversion.py "
+        sys.exit(f"missing {inv_file}\nfix with: python src/daily_inversion.py "
                  f"--year {date.year} --month {date.month} --days {date.day}")
     inv = open_era5(inv_file).sel(valid_time=when)
     # boundary exactly at the southernmost row so no background ring shows
@@ -79,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         panel_label(ax, "abcdefgh"[i], x=-0.02, y=1.05)
     masked_note = (" — gray: level below ground"
                    if any(METRICS[k][2] == "div" for k in args.metrics) else "")
-    fig.suptitle(f"ERA5 temperature-inversion strength — "
+    fig.suptitle(f"{source_label(cfg)} temperature-inversion strength — "
                  f"{date:%Y-%m-%d} {args.hour:02d} UTC{masked_note}", y=0.99)
 
     outdir = Path(args.outdir) if args.outdir else figures_dir(cfg)

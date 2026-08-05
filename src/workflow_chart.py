@@ -18,8 +18,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import REPO_ROOT
-from era5lib.plotstyle import apply_agu_style
+from reanlib.config import REPO_ROOT
+from reanlib.plotstyle import apply_agu_style
 
 C_EXT = "#ffffff"     # external services
 C_DATA = "#ececec"    # local data stores
@@ -112,19 +112,19 @@ def draw_main() -> "plt.Figure":
     s3 = box(ax, 1, 20, 14.5, 7.5, "PANGAEA\nMOSAiC obs:\nJozef et al. 2023,\nMaturilli et al. 2021", C_EXT)
 
     # column 2: local data ------------------------------------------------
-    d1 = box(ax, 21.5, 50, 15, 7, "data/YYYY/MM/DD/\nera5_{plev,sfc}_*.nc\nvia era5_download.py\n(--jobs N, idempotent)", C_DATA)
-    d2 = box(ax, 21.5, 40, 15, 6, "data/cams/\nCO2/CH4 profiles via\nera5_cams_download.py", C_DATA)
+    d1 = box(ax, 21.5, 50, 15, 7, "data/<src>/YYYY/MM/DD/\n<src>_{plev,sfc}_*.nc\nvia era5_download.py or\nmerra2_download.py", C_DATA)
+    d2 = box(ax, 21.5, 40, 15, 6, "data/cams/\nCO2/CH4 profiles via\ncams_download.py", C_DATA)
     d3 = box(ax, 21.5, 20, 15, 7.5, "data/mosaic/\nAtm_Properties.nc\n+ soundings/ (auto)", C_DATA)
     arrow(ax, s1, d1)
     arrow(ax, s2, d2)
     arrow(ax, s3, d3)
 
     # column 3: inversion analysis ----------------------------------------
-    a1 = box(ax, 42, 50, 17, 7, "era5_inversion.py\nSBI scan ($\\Delta$T $\\geq$ 0.5 K),\nT$_{850}$$-$T$_{2m}$, T$_{925}$$-$T$_{1000}$", C_PROC)
-    a2 = box(ax, 42, 43, 17, 4.5, "era5_plot_profiles.py\nera5_plot_maps.py", C_PROC)
-    a3 = box(ax, 42, 36.5, 17, 4.5, "era5_monthly.py\nmonthly climatology", C_PROC)
-    a4 = box(ax, 42, 30, 17, 4.5, "era5_profile_analysis.py\nPCA, T$_{2m}$ correlations", C_PROC)
-    a5 = box(ax, 42, 20, 17, 6, "era5_mosaic_compare.py\n123 matched soundings,\nbias statistics", C_PROC)
+    a1 = box(ax, 42, 50, 17, 7, "daily_inversion.py\nSBI scan ($\\Delta$T $\\geq$ 0.5 K),\nT$_{850}$$-$T$_{2m}$, T$_{925}$$-$T$_{1000}$", C_PROC)
+    a2 = box(ax, 42, 43, 17, 4.5, "plot_profiles.py\nplot_maps.py", C_PROC)
+    a3 = box(ax, 42, 36.5, 17, 4.5, "monthly_stats.py\nmonthly climatology", C_PROC)
+    a4 = box(ax, 42, 30, 17, 4.5, "profile_analysis.py\nPCA, T$_{2m}$ correlations", C_PROC)
+    a5 = box(ax, 42, 20, 17, 6, "mosaic_compare.py\n123 matched soundings,\nbias statistics", C_PROC)
     arrow(ax, d1, a1)
     varrow(ax, a1, a2)
     varrow(ax, a2, a3)
@@ -133,12 +133,12 @@ def draw_main() -> "plt.Figure":
     arrow(ax, d3, a5)
 
     # column 4: radiative closure -----------------------------------------
-    p1 = box(ax, 64, 50, 16, 6.5, "era5_lrt_sim.py prep\npixel selection,\natm + cloud files", C_PROC)
-    p2 = box(ax, 64, 41.5, 16, 5.5, "era5_lrt_sim.py run\nuvspec thermal\n(libRadtran, DISORT)", C_PROC)
-    p3 = box(ax, 64, 33.5, 16, 5.5, "era5_rrtmg_sim.py\nRRTMG-LW (climlab),\nfull 3.08$-$1000 $\\mu$m", C_PROC)
+    p1 = box(ax, 64, 50, 16, 6.5, "lrt_sim.py prep\npixel selection,\natm + cloud files", C_PROC)
+    p2 = box(ax, 64, 41.5, 16, 5.5, "lrt_sim.py run\nuvspec thermal\n(libRadtran, DISORT)", C_PROC)
+    p3 = box(ax, 64, 33.5, 16, 5.5, "rrtmg_sim.py\nRRTMG-LW (climlab),\nfull 3.08$-$1000 $\\mu$m", C_PROC)
     c1 = box(ax, 85, 41.5, 13.5, 5.5, "results CSV\n(simulator column)", C_DATA)
-    c2 = box(ax, 85, 33.5, 13.5, 5.5, "era5_lrt_sim.py\ncompare\n3-way vs ERA5", C_PROC)
-    cs = box(ax, 64, 20, 16, 6.5, "era5_case_study.py\nera5_mosaic_flux.py\nMOSAiC pixels: walkthrough\n+ full-drift LW closure", C_PROC)
+    c2 = box(ax, 85, 33.5, 13.5, 5.5, "lrt_sim.py\ncompare\n3-way vs ERA5", C_PROC)
+    cs = box(ax, 64, 20, 16, 6.5, "case_study.py\nmosaic_flux.py\nMOSAiC pixels: walkthrough\n+ full-drift LW closure", C_PROC)
     fg = box(ax, 85, 20, 13.5, 6.5, "figures/*.png", C_FIG)
     # ERA5 data over the top; CAMS through the corridor between columns
     toparc(ax, d1, p1, rad=-0.18, x_frac=0.4)
@@ -179,16 +179,16 @@ def draw_prefire() -> "plt.Figure":
     s3 = box(ax, 1, 20, 15, 7, "data/YYYY/MM/DD/\nERA5 columns\n(main pipeline)", C_DATA)
 
     # data ------------------------------------------------------------------
-    d1 = box(ax, 21.5, 38.5, 16, 7.5, "data/prefire/\nYYYY/MM/ granules + srf/\nvia era5_prefire_download.py", C_DATA)
+    d1 = box(ax, 21.5, 38.5, 16, 7.5, "data/prefire/\nYYYY/MM/ granules + srf/\nvia prefire_download.py", C_DATA)
     arrow(ax, s1, d1)
     arrow(ax, s2, d1)
 
-    # era5_prefire_bt.py subcommand stack -----------------------------------
+    # prefire_bt.py subcommand stack -----------------------------------
     p1 = box(ax, 43, 44, 17, 8, "collocate\nfootprints $\\rightarrow$ (cell, hour)\ncolumns; pick clear +\novercast test set", C_PROC)
     p2 = box(ax, 43, 33.5, 17, 7, "prep\natm + cloud files,\nper-scene obs BT manifest", C_PROC)
     p3 = box(ax, 43, 23, 17, 7, "run\nuvspec thermal radiance,\nSRF $\\rightarrow$ channel BT", C_PROC)
     p4 = box(ax, 43, 12, 17, 7.5, "jacobian\nperturb skt, T(z), q(z),\ncloud, emissivity", C_PROC)
-    ax.text(51.5, 53.6, "era5_prefire_bt.py", ha="center", fontsize=7.4,
+    ax.text(51.5, 53.6, "prefire_bt.py", ha="center", fontsize=7.4,
             fontweight="bold", style="italic", color="#333333")
     arrow(ax, d1, p1)
     elbow(ax, [(16, 23.5), (40.5, 23.5), (40.5, 48), (43, 48)])

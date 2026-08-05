@@ -10,8 +10,8 @@ see their ``SRF_NEdR_version`` attribute) land in ``data/prefire/srf/``.
 Both downloads are idempotent: existing files are skipped.
 
 Examples:
-    python src/era5_prefire_download.py --year 2025 --month 1 --days 1 --sat 1
-    python src/era5_prefire_download.py --srf-only
+    python src/prefire_download.py --year 2025 --month 1 --days 1 --sat 1
+    python src/prefire_download.py --srf-only
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from era5lib.config import load_config
+from reanlib.config import load_config
 
 SRF_ZENODO_URL = ("https://zenodo.org/api/records/16638853/files/"
                   "PREFIRE_SRFs-v13_2024-09-15.zip/content")
