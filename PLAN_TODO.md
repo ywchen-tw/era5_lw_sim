@@ -35,7 +35,8 @@ the README. Update this file when a stage lands or a plan changes.
       `reanlib/io_merra2.py`). Renamed source-agnostic code: `era5lib` →
       `reanlib`, stage scripts dropped the `era5_` prefix
       (`daily_inversion.py`, `monthly_stats.py`, …); MOSAiC pairs variables
-      `era5_*` → `rean_*`. RT stages (7/7b/7c/8) remain ERA5-only.
+      `era5_*` → `rean_*`. Stages 7/7b/8 have since gained MERRA-2 support
+      (see below); only 7c remains ERA5-only.
 - [x] **Stage 7c — hourly state-time test** (`statetime_test.py`,
       `lrt_sim.py prep --pixels-from`): 11Z + 13Z added for
       2020-01-01, the 12Z 500-pixel set re-simulated at 11Z. Verdict: the
@@ -87,9 +88,14 @@ the README. Update this file when a stage lands or a plan changes.
       CLDTOT (1-h means bracketing the instant) ≥ 0.99 + condensate;
       per-level cloud *fraction* (partial-cloud work, `M2T3NPCLD`) remains
       future.
-- [ ] **MERRA-2 stage 8 (PREFIRE)** — generalize the hard-coded 6-h snap in
-      `prefire_bt.py` collocation to the source cadence; MERRA-2's 3-hourly
-      plev state would halve the ≤3 h state-time offset listed above.
+- [x] **MERRA-2 stage 8 (PREFIRE)** — `prefire_bt.py --source merra2`; the
+      collocation snap is now the source state cadence (6 h ERA5 / 3 h
+      MERRA-2, `--cadence` overrides), sky classification falls back to the
+      stage-7 CLDTOT/condensate screens (no per-level cc in M2I3NPASM), and
+      `--ic-properties baum` substitutes for the locally-absent yang2013
+      tables. 2025-01-01 SAT1 coarse: 15Z clear columns close to +1.0 K
+      bias / 2.3 K rmse vs PREFIRE (12Z clear +6.2 K — synoptic time);
+      overcast −7…−11 K (cloud placement).
 - [ ] Generalize the stage-7c finding: repeat the state-time test on more
       days and around other hours — especially 00Z (the other radiosonde
       synoptic time; expect the same off-trajectory jump) and the 18–19Z

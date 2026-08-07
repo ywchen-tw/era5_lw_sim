@@ -9,9 +9,9 @@ simulates clear-sky broadband LW fluxes with libRadtran for comparison with
 ERA5 radiation — with AGU-style figures at every stage.
 
 The data source is selected with `source:` in `config.yaml` or `--source
-{era5,merra2}` on any analysis stage (see "Data sources" below). Stages 1-7
-(incl. the RRTMG cross-check) run on either source; stages 7c and 8 are
-ERA5-only.
+{era5,merra2}` on any analysis stage (see "Data sources" below). Stages 1-8
+(incl. the RRTMG cross-check and the PREFIRE BT simulation) run on either
+source; stage 7c (the hourly state-time test) is ERA5-only.
 
 ## Workflow at a glance
 
@@ -128,8 +128,7 @@ MERRA-2 notes:
   clear pixels by negligible condensate (≤ 0.01 g/m²; MERRA-2's CLDTOT
   carries trace fraction nearly everywhere, and truly clear full-height
   columns are rare — 14 on 2020-01-01 12 UTC), overcast pixels by CLDTOT
-  ≥ 0.99 + condensate (2384 that snapshot). Stages 7c and 8 remain
-  ERA5-only.
+  ≥ 0.99 + condensate (2384 that snapshot). Stage 7c remains ERA5-only.
   First MERRA-2 results (2020-01-01 12 UTC): clear (5 px): LW↑ closes to
   −0.7 W/m² after the far-IR tail, but LW↓ runs **+6–7 W/m² above MERRA-2's
   flux** for libRadtran and RRTMG alike, with `LWGABCLR` ≈ all-sky there
@@ -517,15 +516,21 @@ conda activate er3t_env && python src/prefire_bt.py jacobian  --year 2025 --mont
 conda activate era5     && python src/prefire_bt.py figure    --year 2025 --month 1 --sat 1
 ```
 
-- **collocate** maps every good-quality footprint to its ERA5 0.25° cell and
-  nearest analysis hour (≤ 3 h offset — the same state-time caveat as stage
-  7) and picks a test set of clear and single-class overcast columns;
-  partially cloudy columns are excluded because BT does not blend linearly
-  across a broken scene.
+- **collocate** maps every good-quality footprint to its reanalysis cell and
+  nearest analysis state (snapped to the source cadence: 6-hourly for ERA5
+  → ≤ 3 h offset, 3-hourly for MERRA-2 → ≤ 1.5 h; `--cadence` overrides)
+  and picks a test set of clear and single-class overcast columns; partially
+  cloudy columns are excluded because BT does not blend linearly across a
+  broken scene. All subcommands accept `--source merra2`; MERRA-2 sky
+  classification uses the stage-7 screens (M2T1NXRAD `CLDTOT` for overcast,
+  condensate-only for clear) since M2I3NPASM has no per-level cloud
+  fraction — so the day's `rad` file must be downloaded too.
 - **run** simulates one thermal-source spectral radiance per column with
   libRadtran at the footprint viewing angle (`mie` liquid / `yang2013` ice —
   radiance-grade optics, unlike the flux-oriented Hu & Stamnes / Fu of stage
-  7), convolves with the scene's SRF and inverts the SRF file's own
+  7; if the large yang2013 tables are not installed locally,
+  `--ic-properties baum` falls back to the Baum GHM thermal tables),
+  convolves with the scene's SRF and inverts the SRF file's own
   blackbody channel-radiance lookup, so simulated and observed BT share one
   radiometric scale. uvspec's thermal band output is radiance per
   wavenumber; the reader converts accordingly (verified against the Planck
@@ -565,6 +570,14 @@ Jacobians close (ΣK_T + K_skt ≈ 1), K_skt falls from ~0.98 (11 µm window)
 to 0.08 (26.5 µm) across the far-IR dirty window, and opaque ice cloud
 gives ∂BT/∂lnIWP ≈ −7 K per 100 % IWP with the surface fully masked
 (K_skt = 0) — the expected information content for a retrieval.
+
+MERRA-2 results (same day, SAT1, coarse + `--ic-properties baum`,
+3 clear + 3 overcast): the two 15 UTC clear columns close to
+**sim − obs = +1.0 K bias, 2.3 K rmse** over all 57 usable channels — the
+3-hourly states and 8–10-footprint obs averaging on the coarser cells help —
+while the 12 UTC clear column sits +6.2 K warm (synoptic analysis time; cf.
+the stage-7c ERA5 finding). Overcast columns scatter −7…−11 K (MERRA-2
+cloud placement vs the real scene, as for ERA5).
 
 ## Notes on surface fluxes
 

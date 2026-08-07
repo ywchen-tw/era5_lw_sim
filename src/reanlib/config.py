@@ -34,6 +34,7 @@ DEFAULTS: dict = {
     "paths": {"data": "data", "derived": "derived", "figures": "figures"},
     "download": {
         "default_hours": [0, 6, 12, 18],
+        "state_cadence_h": 6,
         "plev_variables": [
             "fraction_of_cloud_cover",
             "ozone_mass_mixing_ratio",
@@ -60,6 +61,7 @@ DEFAULTS: dict = {
         "sfc_variables": ["T2M", "TS", "PS"],
         "rad_variables": ["LWGAB", "LWGEM", "LWGABCLR", "EMIS", "CLDTOT"],
         "default_hours": [0, 6, 12, 18],
+        "state_cadence_h": 3,
     },
     "sbi": {"top_limit_hpa": 500, "max_embedded_levels": 1, "min_strength_k": 0.5},
     "masking": {"mask_fixed_below_ground": True},
@@ -94,6 +96,19 @@ def load_config(path: str | Path | None = None, source: str | None = None) -> di
     if cfg["source"] not in SOURCES:
         raise ValueError(f"unknown source {cfg['source']!r}; expected one of {SOURCES}")
     return cfg
+
+
+def state_cadence_h(cfg: dict) -> int:
+    """Hour spacing of the analysis states used for satellite collocation.
+
+    ERA5 is downloaded at synoptic hours (6-hourly by default); MERRA-2's
+    plev collection (M2I3NPASM) is natively 3-hourly, halving the worst-case
+    state-time offset. Override per source with ``state_cadence_h`` in the
+    ``download:`` / ``merra2:`` config blocks.
+    """
+    block = cfg["merra2"] if cfg["source"] == "merra2" else cfg["download"]
+    return int(block.get("state_cadence_h",
+                         3 if cfg["source"] == "merra2" else 6))
 
 
 def _root(cfg: dict, kind: str) -> Path:

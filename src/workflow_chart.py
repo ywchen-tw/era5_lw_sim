@@ -176,7 +176,7 @@ def draw_prefire() -> "plt.Figure":
     # sources --------------------------------------------------------------
     s1 = box(ax, 1, 44, 15, 7, "NASA ASDC\nPREFIRE SAT1/2\n1B-RAD (R01)", C_EXT)
     s2 = box(ax, 1, 33, 15, 7, "Zenodo\nTIRS SRF v13\n(BT lookup + NEdR)", C_EXT)
-    s3 = box(ax, 1, 20, 15, 7, "data/YYYY/MM/DD/\nERA5 columns\n(main pipeline)", C_DATA)
+    s3 = box(ax, 1, 20, 15, 7, "data/<src>/YYYY/MM/DD/\nreanalysis columns\n(main pipeline)", C_DATA)
 
     # data ------------------------------------------------------------------
     d1 = box(ax, 21.5, 38.5, 16, 7.5, "data/prefire/\nYYYY/MM/ granules + srf/\nvia prefire_download.py", C_DATA)
@@ -184,7 +184,7 @@ def draw_prefire() -> "plt.Figure":
     arrow(ax, s2, d1)
 
     # prefire_bt.py subcommand stack -----------------------------------
-    p1 = box(ax, 43, 44, 17, 8, "collocate\nfootprints $\\rightarrow$ (cell, hour)\ncolumns; pick clear +\novercast test set", C_PROC)
+    p1 = box(ax, 43, 44, 17, 8, "collocate\nfootprints $\\rightarrow$ (cell, state)\ncolumns (6 h ERA5 / 3 h\nMERRA-2); clear + overcast", C_PROC)
     p2 = box(ax, 43, 33.5, 17, 7, "prep\natm + cloud files,\nper-scene obs BT manifest", C_PROC)
     p3 = box(ax, 43, 23, 17, 7, "run\nuvspec thermal radiance,\nSRF $\\rightarrow$ channel BT", C_PROC)
     p4 = box(ax, 43, 12, 17, 7.5, "jacobian\nperturb skt, T(z), q(z),\ncloud, emissivity", C_PROC)
@@ -217,8 +217,9 @@ def draw_prefire() -> "plt.Figure":
                          (17, C_DATA, "local data"),
                          (31, C_PROC, "pipeline script"),
                          (46, C_FIG, "figure output")))
-    ax.text(1, 7.0, "collocate/prep run on the ERA5 side; run/jacobian are "
-            "libRadtran jobs (fine spectral grid on the cluster).",
+    ax.text(1, 7.0, "collocate/prep run in the era5 conda env (either data "
+            "source via --source); run/jacobian are libRadtran jobs (fine "
+            "spectral grid on the cluster).",
             fontsize=6.6, color="#555555")
     ax.set_ylim(1.5, 60)
     return fig

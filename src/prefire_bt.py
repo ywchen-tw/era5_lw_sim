@@ -1,8 +1,9 @@
 #!/usr/bin/env python
-"""PREFIRE-TIRS brightness-temperature simulation from ERA5 columns (stage 8).
+"""PREFIRE-TIRS brightness-temperature simulation from reanalysis columns (stage 8).
 
 Collocates PREFIRE 1B-RAD footprints (data/prefire/, see
-prefire_download.py) with ERA5 analysis columns, simulates the TIRS
+prefire_download.py) with reanalysis columns (ERA5 or MERRA-2 via
+``--source``), simulates the TIRS
 channel spectrum with libRadtran (thermal-source nadir-ish radiance,
 ``reptran fine``), converts to channel brightness temperature with the
 mission SRF files, and cross-checks at band level with RRTMG-LW
@@ -18,8 +19,14 @@ BT are on the identical channel radiometric scale. Each of the 8 cross-track
 scenes has its own wavelength registration — channel BT is always computed
 per scene with that scene's SRF.
 
+Footprint times snap to the source's state cadence (ERA5: the 6-hourly
+downloaded synoptic hours; MERRA-2: the native 3-hourly M2I3NPASM states,
+halving the worst-case state-time offset). MERRA-2 has no instantaneous
+per-level cloud fraction, so sky classification uses the M2T1NXRAD CLDTOT
+surrogate (overcast) and column condensate (clear), as in stage 7.
+
 Subcommands / envs:
-  collocate (era5 env)     footprints -> (ERA5 cell, hour) columns, pick test set
+  collocate (era5 env)     footprints -> (cell, hour) columns, pick test set
   prep      (era5 env)     per-column uvspec profile/cloud files + manifest
   run       (er3t_env)     baseline spectral radiance -> channel BT
   rrtmg     (era5 env)     RRTMG-LW 16-band flux-equivalent BT cross-check
@@ -50,7 +57,10 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from reanlib.config import REPO_ROOT, figures_dir, load_config, monthly_path, plev_path, sfc_path
+from reanlib.config import (REPO_ROOT, SOURCES, figures_dir, load_config,
+                            monthly_path, plev_path, sfc_path, source_label,
+                            state_cadence_h)
+from reanlib.fluxes import load_cldtot
 from reanlib.io_era5 import open_era5
 from lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM,
                           build_profile_files, load_cams_profiles,
@@ -179,7 +189,9 @@ def granule_files(cfg, year, month, sat) -> "list[str]":
 def cmd_collocate(args) -> int:
     import netCDF4 as nc
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
+    lab = source_label(cfg)
+    cad = args.cadence or state_cadence_h(cfg)
     files = granule_files(cfg, args.year, args.month, args.sat)
     if not files:
         sys.exit("no granules — run prefire_download.py first")
@@ -187,16 +199,17 @@ def cmd_collocate(args) -> int:
     out_dir = pbt_dir(cfg, args.year, args.month)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    era5_cache = {}
+    rean_cache = {}
 
-    def era5_day(date):
-        if date not in era5_cache:
+    def rean_day(date):
+        if date not in rean_cache:
             p = plev_path(cfg, date)
-            era5_cache[date] = open_era5(p) if p.exists() else None
-        return era5_cache[date]
+            rean_cache[date] = open_era5(p) if p.exists() else None
+        return rean_cache[date]
 
     groups = {}          # (etime iso, iy, ix) -> footprint list
-    n_seen = n_dom = n_noera5 = 0
+    n_seen = n_dom = n_norean = 0
+    print(f"snapping footprints to {lab} states every {cad} h")
     for fn in files:
         ds = nc.Dataset(fn)
         g, b = ds["Geometry"], ds["BT"]
@@ -212,12 +225,12 @@ def cmd_collocate(args) -> int:
         rows = np.where(np.nanmax(lat, axis=1) >= south)[0]
         for ia in rows:
             t = dt.datetime(*[int(v) for v in tv[ia, :5]])
-            hour6 = int(round((t.hour + t.minute / 60.0) / 6.0)) * 6
+            hsnap = int(round((t.hour + t.minute / 60.0) / cad)) * cad
             et = (dt.datetime(t.year, t.month, t.day)
-                  + dt.timedelta(hours=hour6))
-            plev = era5_day(et.date())
-            if plev is None:
-                n_noera5 += 1
+                  + dt.timedelta(hours=hsnap))
+            plev = rean_day(et.date())
+            if plev is None or np.datetime64(et) not in plev["valid_time"].values:
+                n_norean += 1
                 continue
             lats = plev["latitude"].values
             lons = plev["longitude"].values
@@ -243,26 +256,39 @@ def cmd_collocate(args) -> int:
         print(f"  {os.path.basename(fn)}: cumulative {len(groups)} columns")
 
     print(f"{n_seen} footprints scanned, {n_dom} in-domain with good BT, "
-          f"{n_noera5} skipped (no ERA5 day file), {len(groups)} unique "
+          f"{n_norean} skipped (no {lab} state), {len(groups)} unique "
           f"(cell, hour) columns")
 
-    # classify sky per column from the ERA5 column, then pick the test set
+    # classify sky per column from the reanalysis column, then pick the test
+    # set. MERRA-2 has no instantaneous per-level cloud fraction: cc_max is
+    # the M2T1NXRAD CLDTOT surrogate, and "clear" is condensate-only (the
+    # stage-7 screens — CLDTOT <= 0.01 almost never occurs in MERRA-2).
+    cldtot_cache = {}
+
+    def cldtot_at(et):
+        if et not in cldtot_cache:
+            cldtot_cache[et] = load_cldtot(cfg, et.date(), et)
+        return cldtot_cache[et]
+
     columns = []
     for (et_iso, iy, ix), fps in sorted(groups.items()):
         et = dt.datetime.fromisoformat(et_iso)
-        plev = era5_day(et.date())
+        plev = rean_day(et.date())
         p5 = plev.sel(valid_time=et).transpose("pressure_level", "latitude",
                                                "longitude")
         p = p5["pressure_level"].values.astype(float)
-        cc = p5["cc"].values[:, iy, ix].astype(float)
         clwc = p5["clwc"].values[:, iy, ix].astype(float)
         ciwc = p5["ciwc"].values[:, iy, ix].astype(float)
         p_pa_asc = p[::-1] * 100.0
-        lwp = float(TRAPZ(clwc[::-1], x=p_pa_asc) / G0 * 1e3)
-        iwp = float(TRAPZ(ciwc[::-1], x=p_pa_asc) / G0 * 1e3)
-        cc_max = float(np.nanmax(cc))
+        lwp = float(TRAPZ(np.nan_to_num(clwc[::-1]), x=p_pa_asc) / G0 * 1e3)
+        iwp = float(TRAPZ(np.nan_to_num(ciwc[::-1]), x=p_pa_asc) / G0 * 1e3)
+        has_cc = "cc" in p5
+        if has_cc:
+            cc_max = float(np.nanmax(p5["cc"].values[:, iy, ix]))
+        else:
+            cc_max = float(cldtot_at(et)[iy, ix])
         twp = lwp + iwp
-        if cc_max <= 0.01 and twp <= 1.0:
+        if (cc_max <= 0.01 and twp <= 1.0) if has_cc else (twp <= 0.01):
             sky = "clear"
         elif cc_max >= 0.99 and twp > 1.0:
             sky = "overcast"
@@ -323,7 +349,7 @@ def cmd_collocate(args) -> int:
 # ---------------------------------------------------------------- prep
 
 def cmd_prep(args) -> int:
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     cpath = collocation_path(cfg, args.year, args.month, args.sat)
     if not cpath.exists():
         sys.exit(f"missing {cpath} — run collocate first")
@@ -346,14 +372,14 @@ def cmd_prep(args) -> int:
     print(f"simulation range {wvl_lo_nm / 1000.0:.2f}-{wvl_hi_nm / 1000.0:.2f} um "
           f"(usable TIRS{args.sat} channels + margin)")
 
-    era5_cache = {}
+    rean_cache = {}
     columns = []
     for col in [c for c in coll["columns"] if c["selected"]]:
         et = dt.datetime.fromisoformat(col["etime"])
-        if et.date() not in era5_cache:
-            era5_cache[et.date()] = (open_era5(plev_path(cfg, et.date())),
+        if et.date() not in rean_cache:
+            rean_cache[et.date()] = (open_era5(plev_path(cfg, et.date())),
                                      open_era5(sfc_path(cfg, et.date())))
-        plev, sfc = era5_cache[et.date()]
+        plev, sfc = rean_cache[et.date()]
         iy, ix = col["iy"], col["ix"]
         p5 = plev.sel(valid_time=et).transpose("pressure_level", "latitude",
                                                "longitude")
@@ -362,9 +388,11 @@ def cmd_prep(args) -> int:
         sp_hpa = float(s5["sp"].values[iy, ix]) / 100.0
         t2m = float(s5["t2m"].values[iy, ix])
         skt = float(s5["skt"].values[iy, ix])
-        above = p <= sp_hpa
+        # above ground AND finite (MERRA-2 masks below-ground and marginal
+        # near-surface levels to NaN; ERA5 extrapolates instead)
+        above = (p <= sp_hpa) & np.isfinite(p5["t"].values[:, iy, ix])
         cols = {v: p5[v].values[above, iy, ix].astype(float)
-                for v in ("t", "q", "o3", "cc", "clwc", "ciwc")}
+                for v in ("t", "q", "o3", "clwc", "ciwc")}
 
         label = col["label"]
         atm_file, ch4_file, keep, z_keep = build_profile_files(
@@ -400,6 +428,7 @@ def cmd_prep(args) -> int:
 
     manifest = {
         "year": args.year, "month": args.month, "sat": args.sat,
+        "source": cfg["source"],
         "srf_file": str(spath), "emissivity": EMISSIVITY,
         "wavelength_range_nm": [round(wvl_lo_nm), round(wvl_hi_nm)],
         "reff_um": {"liquid": REFF_LIQ_UM, "ice": REFF_ICE_UM},
@@ -435,7 +464,8 @@ def resolve_mol_abs_param(args) -> str:
 
 def radiance_init(tmp: Path, tag: str, manifest: dict, col: dict,
                   atm_file: str, wc_file, ic_file, skt: float,
-                  emissivity: float, lrt_cfg_base, er3t, extra_opts=None):
+                  emissivity: float, lrt_cfg_base, er3t, extra_opts=None,
+                  ic_properties: str = "yang2013"):
     """One thermal-source spectral radiance uvspec job (TOA, sensor vza)."""
     lrt_cfg = copy.deepcopy(lrt_cfg_base)
     lrt_cfg["atmosphere_file"] = atm_file
@@ -451,7 +481,7 @@ def radiance_init(tmp: Path, tag: str, manifest: dict, col: dict,
         extra["wc_properties"] = "mie interpolate"
     if ic_file:
         extra["ic_file 1D"] = ic_file
-        extra["ic_properties"] = "yang2013 interpolate"
+        extra["ic_properties"] = f"{ic_properties} interpolate"
     if extra_opts:
         extra.update(extra_opts)
     init = er3t.rtm.lrt.lrt_init_mono_rad(
@@ -477,6 +507,9 @@ def read_spectrum(output_file: str) -> "tuple[np.ndarray, np.ndarray]":
     convert to per-micron with |dnu/dlambda| = 1e4 / lambda_um^2.
     """
     data = np.atleast_2d(np.loadtxt(output_file))
+    if data.size == 0:
+        raise RuntimeError(f"empty uvspec output {output_file} — the job "
+                           "failed; rerun its input file by hand for stderr")
     wl_um = data[:, 0] / 1000.0
     rad_per_um = data[:, 1] * 1e4 / wl_um**2
     order = np.argsort(wl_um)
@@ -484,7 +517,7 @@ def read_spectrum(output_file: str) -> "tuple[np.ndarray, np.ndarray]":
 
 
 def variants_of(col: dict) -> "list[str]":
-    """Simulated variants: clear always, cloudy when ERA5 holds condensate."""
+    """Simulated variants: clear always, cloudy when the column holds condensate."""
     v = ["clear"]
     if col.get("wc_file") or col.get("ic_file"):
         v.append("cloudy")
@@ -496,7 +529,7 @@ def cmd_run(args) -> int:
 
     import er3t
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     mpath = manifest_path(cfg, args.year, args.month, args.sat)
     if not mpath.exists():
         sys.exit(f"missing {mpath} — run prep first")
@@ -519,7 +552,8 @@ def cmd_run(args) -> int:
             ic = col.get("ic_file") if vname == "cloudy" else None
             init = radiance_init(tmp, tag, manifest, col, col["atm_file"],
                                  wc, ic, col["skt"], manifest["emissivity"],
-                                 lrt_cfg_base, er3t)
+                                 lrt_cfg_base, er3t,
+                                 ic_properties=args.ic_properties)
             inits.append((col, vname, init))
             if args.overwrite or not (os.path.exists(init.output_file)
                                       and os.path.getsize(init.output_file) > 50):
@@ -616,7 +650,7 @@ def cmd_rrtmg(args) -> int:
                                 cloud_layer_paths, layer_mean,
                                 patch_interface_temperature, q_from_vmr)
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     mpath = manifest_path(cfg, args.year, args.month, args.sat)
     manifest = json.loads(mpath.read_text())
     patch_interface_temperature()
@@ -682,19 +716,18 @@ def cmd_rrtmg(args) -> int:
 
 # ---------------------------------------------------------------- jacobian
 
-def era5_row_index(atm_file: str) -> np.ndarray:
-    """Row indices (TOA-first file) belonging to the ERA5 part of the profile.
+def rean_row_index(atm_file: str) -> np.ndarray:
+    """Row indices (TOA-first file) belonging to the reanalysis part of the
+    profile.
 
-    The file is afglsw rows on top, ERA5 rows below; the ERA5 block starts at
-    the first pressure >= 0.9 hPa jump discontinuity — simpler: rows below
-    the afglsw/ERA5 splice are contiguous at the end, identified by pressure
-    increasing monotonically past the last afglsw pressure. We tag them as
-    all rows with p >= p of the first row whose spacing drops under 2 km.
+    The file is afglsw rows on top, reanalysis rows below; rows below the
+    splice are contiguous at the end. We tag them as all rows from the first
+    row whose spacing drops under 2 km.
     """
     rows = np.loadtxt(atm_file, comments="#")
     z = rows[:, 0]
     dz = -np.diff(z)
-    i0 = int(np.argmax(dz < 2.0))       # first fine-spaced gap = ERA5 block
+    i0 = int(np.argmax(dz < 2.0))       # first fine-spaced gap = reanalysis block
     return np.arange(i0, rows.shape[0])
 
 
@@ -702,7 +735,7 @@ def build_state_list(col: dict, args) -> "list[dict]":
     """Ordered perturbation states for one column (finite forward differences)."""
     states = [{"name": "skt", "kind": "skt", "dx": DT_K, "units": "K"}]
     rows = np.loadtxt(col["atm_file"], comments="#")
-    idx = era5_row_index(col["atm_file"])
+    idx = rean_row_index(col["atm_file"])
     for i in idx:
         states.append({"name": f"t_{rows[i, 1]:.0f}hPa", "kind": "t_level",
                        "row": int(i), "p_hpa": float(rows[i, 1]),
@@ -767,7 +800,7 @@ def perturbed_files(col: dict, state: dict, jdir: Path) -> dict:
         np.savetxt(out, rows,
                    fmt="%11.3f %11.5f %11.3f %12.6e %12.6e %12.6e %12.6e "
                        "%12.6e %12.6e",
-                   header=("perturbed ERA5 profile\n     z(km)      p(mb)   "
+                   header=("perturbed reanalysis profile\n     z(km)      p(mb)   "
                            "     T(K)    air(cm-3)    o3(cm-3)     o2(cm-3)"
                            "    h2o(cm-3)    co2(cm-3)     no2(cm-3)"))
         over["atm_file"] = str(out)
@@ -791,7 +824,7 @@ def perturbed_files(col: dict, state: dict, jdir: Path) -> dict:
 
 
 def cmd_jacobian(args) -> int:
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     mpath = manifest_path(cfg, args.year, args.month, args.sat)
     manifest = json.loads(mpath.read_text())
     columns = [c for c in manifest["columns"]
@@ -865,7 +898,8 @@ def jacobian_lrt(cfg, args, manifest, columns) -> int:
             wc = over["wc_file"] if vname == "cloudy" else None
             ic = over["ic_file"] if vname == "cloudy" else None
             init = radiance_init(jdir, name, manifest, col, over["atm_file"],
-                                 wc, ic, over["skt"], ems, lrt_cfg_base, er3t)
+                                 wc, ic, over["skt"], ems, lrt_cfg_base, er3t,
+                                 ic_properties=args.ic_properties)
             inits.append((name, init))
             if args.overwrite or not (os.path.exists(init.output_file)
                                       and os.path.getsize(init.output_file) > 50):
@@ -984,14 +1018,14 @@ def cmd_cotscan(args) -> int:
 
     Reproduces the ARCSIX BT-vs-COT sensitivity figure with PREFIRE
     channels: a single-layer cloud of given phase / r_eff / top / base is
-    inserted into one collocated ERA5 column, its 550-nm optical thickness
+    inserted into one collocated reanalysis column, its 550-nm optical thickness
     swept over a log grid via ``{wc,ic}_modify tau set``, and each state is
     one spectral uvspec run convolved to channel BT. Jacobians are forward
     finite differences (tau +5 %, r_eff +1 um at fixed tau).
     """
     import er3t
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     manifest = json.loads(manifest_path(cfg, args.year, args.month,
                                         args.sat).read_text())
     cols = manifest["columns"]
@@ -1037,7 +1071,8 @@ def cmd_cotscan(args) -> int:
             init = radiance_init(
                 tmp, tag, manifest, col, col["atm_file"], wc, ic,
                 col["skt"], manifest["emissivity"], lrt_cfg_base, er3t,
-                extra_opts={mod_key: f"tau set {tau:.5f}"})
+                extra_opts={mod_key: f"tau set {tau:.5f}"},
+                ic_properties=args.ic_properties)
             inits.append((i, kind, init))
             if args.overwrite or not (os.path.exists(init.output_file)
                                       and os.path.getsize(init.output_file) > 50):
@@ -1123,7 +1158,7 @@ def cmd_figure(args) -> int:
 
     from reanlib.plotstyle import apply_agu_style, panel_label
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, source=args.source)
     manifest = json.loads(manifest_path(cfg, args.year, args.month,
                                         args.sat).read_text())
     rpath = results_path(cfg, args.year, args.month, args.sat)
@@ -1166,7 +1201,7 @@ def cmd_figure(args) -> int:
                         color=C_RRT,
                         label="RRTMG band (flux-equiv.)" if i == 0 else None)
         ax.axhline(col["skt"], color="0.6", lw=0.8, ls=":",
-                   label="ERA5 skt")
+                   label=f"{source_label(cfg)} skt")
         ax.set_xlim(3.5, 30.0)
         ax.set_xlabel("wavelength (µm)")
         ax.set_ylabel("brightness temperature (K)")
@@ -1253,6 +1288,8 @@ def add_common(sp):
     sp.add_argument("--year", type=int, required=True)
     sp.add_argument("--month", type=int, required=True)
     sp.add_argument("--sat", type=int, default=1, choices=[1, 2])
+    sp.add_argument("--source", default=None, choices=list(SOURCES),
+                    help="data source (default: config.yaml `source:`)")
     sp.add_argument("--config", default=None)
 
 
@@ -1260,10 +1297,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("collocate", help="footprints -> ERA5 columns")
+    sp = sub.add_parser("collocate", help="footprints -> reanalysis columns")
     add_common(sp)
     sp.add_argument("--n-clear", type=int, default=3)
     sp.add_argument("--n-cloudy", type=int, default=3)
+    sp.add_argument("--cadence", type=int, default=None,
+                    help="state snap cadence in hours (default: 6 for ERA5, "
+                         "3 for MERRA-2)")
     sp.set_defaults(func=cmd_collocate)
 
     sp = sub.add_parser("prep", help="profile files + manifest")
@@ -1278,6 +1318,10 @@ def main(argv=None) -> int:
                     help="default: coarse on Darwin, fine on Linux/CURC")
     sp.add_argument("--force-local", action="store_true",
                     help="override the Darwin OOM guard for medium/fine")
+    sp.add_argument("--ic-properties", default="yang2013",
+                    choices=["yang2013", "baum_v3.6", "baum", "fu"],
+                    help="ice optics (yang2013 data may be absent locally; "
+                         "baum_v3.6 is a thermal-capable fallback)")
     sp.add_argument("--workers", type=int, default=None)
     sp.add_argument("--overwrite", action="store_true")
     sp.set_defaults(func=cmd_run)
@@ -1299,6 +1343,9 @@ def main(argv=None) -> int:
                     help="default: coarse on Darwin, fine on Linux/CURC")
     sp.add_argument("--force-local", action="store_true",
                     help="override the Darwin OOM guard for medium/fine")
+    sp.add_argument("--ic-properties", default="yang2013",
+                    choices=["yang2013", "baum_v3.6", "baum", "fu"],
+                    help="ice optics (yang2013 data may be absent locally)")
     sp.add_argument("--workers", type=int, default=None)
     sp.add_argument("--overwrite", action="store_true")
     sp.set_defaults(func=cmd_jacobian)
@@ -1326,6 +1373,9 @@ def main(argv=None) -> int:
                     help="default: coarse on Darwin, fine on Linux/CURC")
     sp.add_argument("--force-local", action="store_true",
                     help="override the Darwin OOM guard for medium/fine")
+    sp.add_argument("--ic-properties", default="yang2013",
+                    choices=["yang2013", "baum_v3.6", "baum", "fu"],
+                    help="ice optics (yang2013 data may be absent locally)")
     sp.add_argument("--workers", type=int, default=None)
     sp.add_argument("--overwrite", action="store_true")
     sp.set_defaults(func=cmd_cotscan)
