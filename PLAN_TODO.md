@@ -61,6 +61,17 @@ the README. Update this file when a stage lands or a plan changes.
 - [ ] **SAT2 / TIRS2 set** — rerun collocate→figure with `--sat 2`
       (second wavelength registration); compare the two instruments on
       shared scenes.
+- [ ] **Averaging kernels + DOF from the existing K files** — no new
+      simulations needed: per column compute
+      A = (Kᵀ S_e⁻¹ K + S_a⁻¹)⁻¹ Kᵀ S_e⁻¹ K from the `jacobian_*.nc`
+      matrices (channel NEdR already stored → S_e; S_a from a monthly
+      reanalysis profile covariance), report DOF = trace(A) and AK-row
+      figures per state kind. This is the natural first step of the OE
+      item below and quantifies what the TIRS channels can actually
+      resolve per sky class. Note the forward sim itself needs no AK —
+      the spectral weighting is fully handled by the per-scene SRF
+      convolution + blackbody-lookup BT, and the vertical weighting
+      functions ARE the K_T rows (closure check: K_skt + ΣK_T ≈ 1).
 - [ ] **Cloud-property retrieval (OE)** — optimal estimation on the K
       netCDFs (channel NEdR is already stored for S_e); start with
       ln IWP / r_eff / CTH on overcast columns; averaging kernels + DOF
@@ -68,6 +79,10 @@ the README. Update this file when a stage lands or a plan changes.
 - [ ] **EarthCARE validation of retrieved cloud properties** — collocate
       PREFIRE footprints with EarthCARE cloud products (MSI M-CLD,
       CPR/ATLID synergy ACM-CAP). Prerequisite: ESA EO account.
+      When comparing against any retrieved L2 product (PREFIRE 2B-ATM or
+      EarthCARE), apply the product's averaging kernels to the reanalysis
+      profile first (Rodgers & Connor 2003: x̂ = x_a + A(x_model − x_a))
+      so vertical-resolution smoothing isn't misread as state bias.
 
 ## Backlog / ideas
 
