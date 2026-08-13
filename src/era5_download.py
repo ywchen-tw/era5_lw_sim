@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from reanlib.config import load_config, plev_path, sfc_path
+from reanlib.config import load_config, plev_path, sfc_path, source_area
 from reanlib.io_era5 import open_era5, require_cds_credentials
 
 DATASET_IDS = {
@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     bad = [h for h in hours if not 0 <= h <= 23]
     if bad:
         sys.exit(f"invalid hour(s): {bad}")
-    area = list(args.area) if args.area is not None else cfg["area"]
+    area = list(args.area) if args.area is not None else source_area(cfg)
     days = parse_days(args.days, args.year, args.month)
 
     if not args.dry_run:

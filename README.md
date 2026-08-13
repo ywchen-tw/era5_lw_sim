@@ -99,6 +99,7 @@ Three interchangeable reanalysis sources; pick with `source:` in `config.yaml`
 |---|---|---|---|
 | Downloader | `src/era5_download.py` (CDS) | `src/merra2_download.py` (GES DISC) | `src/carra2_download.py` (CDS) |
 | Profiles | hourly analysis, 37 levels, 0.25° | `M2I3NPASM`: 3-hourly instantaneous, 42 levels, 0.5°×0.625° | 3-hourly analysis, 20 levels, 2.5 km |
+| Default domain | 80–90°N | 80–90°N | **85–90°N** (`carra2.area`) |
 | Surface | hourly analysis | `M2I1NXASM`: hourly instantaneous | 3-hourly analysis (instantaneous) |
 | Grid | regular lat/lon | regular lat/lon | north polar stereographic (`y`/`x`, 2-D lat/lon) |
 | Profile top | 1 hPa | 0.1 hPa | 50 hPa |
@@ -197,9 +198,26 @@ CARRA-2 notes:
   off that cadence rather than silently returning forecast data. The 20
   pressure levels include 1000/950/925/900/875/850, so the SBI scan and both
   fixed-level metrics carry over unchanged.
-- **Volume.** At 2.5 km the 80–90°N cap is ~620 k cells against ERA5's
-  ~59 k, so a day of profiles is a few GB rather than a few tens of MB.
-  Start with a single day before committing to a month.
+- **Volume, and why the domain is smaller.** Cells scale as
+  tan²((90 − φ)/2), so the projection-space box of the 80–90°N cap is 892²
+  ≈ 796 k cells against ERA5's ~59 k — 1.27 GB of profiles per day, 41 GB
+  a month. CARRA-2 therefore carries its own `carra2.area` of **85–90°N**
+  (446² ≈ 199 k cells, ~318 MB/day, 10 GB a month); the global `area:` stays
+  80–90°N so ERA5 and MERRA-2 products are untouched. Note what that costs:
+  above 85°N there is no land, so the smaller domain excludes N Greenland
+  (83.7°N), Ellesmere (83.1°N), Franz Josef Land (81.9°N), Severnaya Zemlya
+  (81.3°N) and Svalbard (80.8°N) — the terrain and ice-edge contrast where
+  2.5 km resolution has most reason to differ from 0.25° ERA5, and the
+  region carrying the Greenland/CAA maximum and Atlantic-sector minimum of
+  the ERA5 climatology. It also makes CARRA-2 domain means **not comparable**
+  with the 80–90°N ERA5/MERRA-2 numbers. All 123 January 2020 MOSAiC
+  soundings (86.7–87.6°N) sit inside it, so stage 6 is unaffected. Widen it
+  with `carra2.area` or `--area` when the spatial climatology matters more
+  than the volume.
+- Note that CDS **queue latency is per request**, not per byte: the archive
+  runs 65 concurrent jobs against a backlog that has been observed in the
+  thousands, and the downloader issues one request per day per level type
+  (62 for a month). Trimming a request does not shorten its wait.
 
 ## Usage
 

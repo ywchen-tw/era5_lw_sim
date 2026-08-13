@@ -40,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from reanlib.config import load_config, plev_path, sfc_path
+from reanlib.config import load_config, plev_path, sfc_path, source_area
 from reanlib.io_carra2 import hours_in_file, normalize_carra2
 from reanlib.io_era5 import require_cds_credentials
 
@@ -174,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(f"CARRA-2 analyses are {ANALYSIS_STEP_H}-hourly; "
                  f"hour(s) {off_cadence} are not available "
                  "(they exist only in the forecast stream)")
-    area = list(args.area) if args.area is not None else cfg["area"]
+    area = list(args.area) if args.area is not None else source_area(cfg)
     days = parse_days(args.days, args.year, args.month)
 
     if not args.dry_run:

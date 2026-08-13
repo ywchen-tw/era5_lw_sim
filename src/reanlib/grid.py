@@ -181,7 +181,9 @@ class GridIndex:
         self.curvilinear = is_curvilinear(obj)
         self.lat2d, self.lon2d = latlon2d(obj)
         self.shape = self.lat2d.shape
+        self.inside = domain_mask(obj)
         self._tree = None
+        self._flat: np.ndarray | None = None
         if not self.curvilinear:
             self._lat1d = np.asarray(obj["latitude"].values, dtype=float)
             self._lon1d = np.asarray(obj["longitude"].values, dtype=float)
@@ -191,15 +193,26 @@ class GridIndex:
         if self._tree is None:
             from scipy.spatial import cKDTree
 
-            self._tree = cKDTree(_unit_vectors(self.lat2d, self.lon2d))
+            # only cells inside the requested area are candidates: the corners
+            # of a projected bounding box hold no data, and a query near the
+            # domain edge would otherwise snap to one and return silent NaNs
+            self._flat = np.flatnonzero(self.inside.ravel())
+            lat = self.lat2d.ravel()[self._flat]
+            lon = self.lon2d.ravel()[self._flat]
+            self._tree = cKDTree(_unit_vectors(lat, lon))
         return self._tree
 
     def query(self, lat: float, lon: float) -> tuple[tuple[int, int], float]:
-        """Nearest cell to (lat, lon): its ``(iy, ix)`` index and distance [km]."""
+        """Nearest in-domain cell to (lat, lon): ``(iy, ix)`` and distance [km].
+
+        The distance is the caller's guard against a point outside the domain:
+        the nearest cell always exists, so a far-away match shows up as a large
+        distance rather than an error.
+        """
         if self.curvilinear:
             vec = _unit_vectors(np.array([lat]), np.array([lon]))
-            flat = int(self.tree.query(vec)[1][0])
-            iy, ix = np.unravel_index(flat, self.shape)
+            k = int(self.tree.query(vec)[1][0])
+            iy, ix = np.unravel_index(self._flat[k], self.shape)
         else:
             iy = int(np.abs(self._lat1d - lat).argmin())
             dlon = (self._lon1d - lon + 180.0) % 360.0 - 180.0

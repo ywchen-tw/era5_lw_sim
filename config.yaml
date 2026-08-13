@@ -5,6 +5,8 @@
 source: era5
 
 # Download / analysis domain as [North, West, South, East] (degrees).
+# Per-source override: an `area` key inside a source's own block (CARRA-2
+# sets one, see below).
 area: [90, -180, 80, 180]
 
 paths:
@@ -65,6 +67,16 @@ carra2:
   # the SUB-DAILY entry: reanalysis-pan-carra-means holds only daily/monthly
   # aggregates, which cannot feed the inversion metrics
   dataset: reanalysis-pan-carra
+  # CARRA-2 keeps its own, smaller domain. Cells scale as tan^2((90-lat)/2),
+  # so 85-90N is a QUARTER of the 80-90N cap: 199 k vs 796 k cells per field,
+  # ~318 MB vs 1.27 GB of profiles per day. ERA5 and MERRA-2 keep the global
+  # 80-90N `area` above, so their existing products are untouched.
+  # Trade-off: 85-90N is all pack ice — it excludes N Greenland (83.7N),
+  # Ellesmere (83.1N), Franz Josef Land (81.9N), Severnaya Zemlya (81.3N) and
+  # Svalbard (80.8N), i.e. the terrain where 2.5 km resolution matters most,
+  # and makes domain means non-comparable with the 80-90N ERA5/MERRA-2 ones.
+  # All 123 January 2020 MOSAiC soundings (86.7-87.6N) stay inside it.
+  area: [90, -180, 85, 180]
   # CARRA-2 has no specific humidity on pressure levels (q is derived from
   # relative_humidity) and no ozone at all, which is why stage 7 does not
   # accept --source carra2.

@@ -162,7 +162,14 @@ def stats_block(pairs: xr.Dataset) -> str:
     obs_f = pairs["obs_sbi_found"].values.astype(bool) & ok
     era_f = (pairs["rean_sbi_found"].values == 1) & ok
     both = obs_f & era_f
+    km = pairs["match_km"].values[ok]
+    hrs = pairs["match_dt_h"].values[ok]
     lines = [f"matched soundings          : {int(ok.sum())} / {ok.size}",
+             # max distance is the tell-tale for a sounding outside the
+             # downloaded domain: it still matches, to the nearest edge cell
+             f"match offset (median/max)  : {np.median(hrs):.1f} h / "
+             f"{np.median(km):.0f} km  (max {np.max(hrs):.1f} h / "
+             f"{np.max(km):.0f} km)",
              f"obs SBI frequency          : {obs_f.sum() / ok.sum():.1%}",
              f"{lab} SBI frequency".ljust(27) + f": {era_f.sum() / ok.sum():.1%}",
              f"detection agreement        : "

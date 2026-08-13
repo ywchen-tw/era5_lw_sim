@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from reanlib.config import load_config, plev_path, rad_path, sfc_path
+from reanlib.config import load_config, plev_path, rad_path, sfc_path, source_area
 from reanlib.io_merra2 import hours_in_file, normalize_merra2, require_earthdata_credentials
 
 
@@ -82,7 +82,7 @@ def subset_via_opendap(url: str, kind: str, cfg: dict, date: dt.date,
 
 
 def subset_local(ds, kind: str, cfg: dict, date: dt.date, hours: list[int]):
-    north, west, south, east = cfg["area"]
+    north, west, south, east = source_area(cfg)
     m2 = cfg["merra2"]
     variables = m2[f"{kind}_variables"]
     sel = ds[list(variables)].sel(lat=slice(south, north), lon=slice(west, east))

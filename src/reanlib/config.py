@@ -67,6 +67,11 @@ DEFAULTS: dict = {
         # the sub-daily pan-Arctic entry; reanalysis-pan-carra-means holds only
         # daily/monthly aggregates and cannot feed the inversion metrics
         "dataset": "reanalysis-pan-carra",
+        # CARRA-2 keeps its own, smaller domain: cells scale as
+        # tan^2((90-lat)/2), so 85-90N is a quarter of the 80-90N cap
+        # (199 k vs 796 k cells per field, ~318 MB vs 1.27 GB of profiles per
+        # day). The global `area` stays 80-90N for ERA5 and MERRA-2.
+        "area": [90, -180, 85, 180],
         # CARRA-2 carries no specific humidity on pressure levels, so q is
         # derived from relative_humidity (see reanlib/io_carra2.py)
         "plev_variables": ["temperature", "relative_humidity",
@@ -120,6 +125,26 @@ def load_config(path: str | Path | None = None, source: str | None = None) -> di
     return cfg
 
 
+def source_block(cfg: dict) -> dict:
+    """The config block holding the current source's download settings.
+
+    ERA5's lives under ``download:`` for historical reasons; the other sources
+    use a block named after themselves.
+    """
+    source = cfg["source"]
+    return cfg["download"] if source == "era5" else cfg[source]
+
+
+def source_area(cfg: dict) -> list[float]:
+    """Download domain [N, W, S, E] for the current source.
+
+    Falls back to the global ``area:`` unless the source's own block overrides
+    it. CARRA-2 does: at 2.5 km the 80-90N cap is ~796 k cells per field, so
+    its domain is set separately from the global one the coarser sources use.
+    """
+    return list(source_block(cfg).get("area", cfg["area"]))
+
+
 def state_cadence_h(cfg: dict) -> int:
     """Hour spacing of the analysis states used for satellite collocation.
 
@@ -129,9 +154,8 @@ def state_cadence_h(cfg: dict) -> int:
     ``state_cadence_h`` in the ``download:`` / ``merra2:`` / ``carra2:``
     config blocks.
     """
-    source = cfg["source"]
-    block = cfg[source] if source in ("merra2", "carra2") else cfg["download"]
-    return int(block.get("state_cadence_h", 6 if source == "era5" else 3))
+    return int(source_block(cfg).get("state_cadence_h",
+                                     6 if cfg["source"] == "era5" else 3))
 
 
 def _root(cfg: dict, kind: str) -> Path:

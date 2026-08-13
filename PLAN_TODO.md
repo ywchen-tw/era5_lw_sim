@@ -114,8 +114,25 @@ the README. Update this file when a stage lands or a plan changes.
 - [ ] **CARRA-2 vs ERA5 at matched resolution** — the obvious science use of
       the new source: does a 2.5 km regional model produce systematically
       stronger/shallower SBIs than 0.25° ERA5 over the same MOSAiC soundings?
-      Stage 6 already runs on both; the comparison needs one shared month
-      downloaded (mind the volume note in the README) and a joint figure.
+      Stage 6 already runs on both (all 123 Jan-2020 soundings are at
+      86.7-87.6N, inside CARRA-2's 85-90N domain), and needs one shared month
+      downloaded plus a joint figure.
+- [ ] **Analysis-stage `--area` for cross-source domain means** — CARRA-2 is
+      downloaded on 85-90N while ERA5/MERRA-2 sit on 80-90N, so their
+      domain-mean statistics are NOT comparable as they stand. The stages
+      have no area filter (only the downloaders do), so a like-for-like
+      climatology comparison needs either an analysis-time area mask or an
+      ERA5 subset re-run. Weight arrays already exist (`grid.area_weights`),
+      so this is mostly a config knob plus a mask in `monthly_stats` /
+      `profile_analysis`.
+- [ ] **Widen CARRA-2 to 80-90N if the spatial story matters** — the current
+      85-90N domain is all pack ice and drops N Greenland / Ellesmere /
+      Svalbard / Franz Josef Land / Severnaya Zemlya, i.e. exactly the
+      terrain where 2.5 km has most reason to beat 0.25 deg. 4x the volume
+      (41 GB/month vs 10 GB). Trimming `plev_variables` to temperature +
+      relative_humidity would pay for most of that (stages 1-6 read no other
+      profile field), at the cost of re-downloading if stage 7 is ever
+      ported — though that is blocked on ozone regardless.
 - [ ] **CARRA-2 first real-data validation** — the stages were verified on a
       synthetic delivery through the real normalizer plus the unchanged
       ERA5/MERRA-2 regressions; the first genuine CDS delivery should be
