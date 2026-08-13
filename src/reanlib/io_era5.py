@@ -54,7 +54,8 @@ def open_era5(path: str | Path) -> xr.Dataset:
     if not path.exists():
         raise FileNotFoundError(
             f"{path} does not exist — download it first (src/era5_download.py "
-            "for ERA5, src/merra2_download.py for MERRA-2)"
+            "for ERA5, src/merra2_download.py for MERRA-2, "
+            "src/carra2_download.py for CARRA-2)"
         )
     ds = xr.open_dataset(path)
 

@@ -1,7 +1,7 @@
 """Configuration loading and canonical file paths for the reanalysis pipeline.
 
 Every path helper takes the loaded ``cfg`` dict, whose ``source`` key
-("era5" or "merra2") selects the per-source subtree and filename stem:
+("era5", "merra2" or "carra2") selects the per-source subtree and filename stem:
 
     data/<source>/YYYY/MM/DD/<source>_{plev,sfc}_YYYYMMDD.nc
     derived/<source>/YYYY/MM/DD/<source>_inversion_YYYYMMDD.nc
@@ -20,8 +20,8 @@ import yaml
 # this file lives at <repo>/src/reanlib/config.py
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-SOURCES = ("era5", "merra2")
-SOURCE_LABELS = {"era5": "ERA5", "merra2": "MERRA-2"}
+SOURCES = ("era5", "merra2", "carra2")
+SOURCE_LABELS = {"era5": "ERA5", "merra2": "MERRA-2", "carra2": "CARRA-2"}
 
 
 def source_label(cfg: dict) -> str:
@@ -63,6 +63,28 @@ DEFAULTS: dict = {
         "default_hours": [0, 6, 12, 18],
         "state_cadence_h": 3,
     },
+    "carra2": {
+        # the sub-daily pan-Arctic entry; reanalysis-pan-carra-means holds only
+        # daily/monthly aggregates and cannot feed the inversion metrics
+        "dataset": "reanalysis-pan-carra",
+        # CARRA-2 carries no specific humidity on pressure levels, so q is
+        # derived from relative_humidity (see reanlib/io_carra2.py)
+        "plev_variables": ["temperature", "relative_humidity",
+                           "specific_cloud_liquid_water_content",
+                           "specific_cloud_ice_water_content", "cloud_cover"],
+        "sfc_variables": ["2m_temperature", "skin_temperature", "surface_pressure",
+                          "land_sea_mask"],
+        # the 20 CARRA-2 pressure levels; the top is 50 hPa, not ERA5's 1 hPa
+        "pressure_levels": [50, 70, 100, 150, 200, 250, 300, 400, 500, 600, 700,
+                            750, 800, 825, 850, 875, 900, 925, 950, 1000],
+        "default_hours": [0, 6, 12, 18],
+        "state_cadence_h": 3,
+        # saturation reference for the RH -> q conversion. CARRA documents its
+        # relative humidity against saturation over water; "ice" and "mixed"
+        # (water above 0 C, ice below -23 C, blended between) are available for
+        # sensitivity tests.
+        "rh_over": "water",
+    },
     "sbi": {"top_limit_hpa": 500, "max_embedded_levels": 1, "min_strength_k": 0.5},
     "masking": {"mask_fixed_below_ground": True},
 }
@@ -101,14 +123,15 @@ def load_config(path: str | Path | None = None, source: str | None = None) -> di
 def state_cadence_h(cfg: dict) -> int:
     """Hour spacing of the analysis states used for satellite collocation.
 
-    ERA5 is downloaded at synoptic hours (6-hourly by default); MERRA-2's
-    plev collection (M2I3NPASM) is natively 3-hourly, halving the worst-case
-    state-time offset. Override per source with ``state_cadence_h`` in the
-    ``download:`` / ``merra2:`` config blocks.
+    ERA5 is downloaded at synoptic hours (6-hourly by default); MERRA-2's plev
+    collection (M2I3NPASM) and CARRA-2's analyses are natively 3-hourly,
+    halving the worst-case state-time offset. Override per source with
+    ``state_cadence_h`` in the ``download:`` / ``merra2:`` / ``carra2:``
+    config blocks.
     """
-    block = cfg["merra2"] if cfg["source"] == "merra2" else cfg["download"]
-    return int(block.get("state_cadence_h",
-                         3 if cfg["source"] == "merra2" else 6))
+    source = cfg["source"]
+    block = cfg[source] if source in ("merra2", "carra2") else cfg["download"]
+    return int(block.get("state_cadence_h", 6 if source == "era5" else 3))
 
 
 def _root(cfg: dict, kind: str) -> Path:

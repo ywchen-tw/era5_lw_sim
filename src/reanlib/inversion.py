@@ -36,12 +36,20 @@ Pressure levels with p > surface pressure are below ground (ERA5 extrapolates
 them; MERRA-2 stores fill values, NaN after decoding) and are excluded from
 the SBI scan — as are levels with non-finite temperature; the fixed-level
 metrics are masked there when ``masking.mask_fixed_below_ground`` is enabled.
+
+The scan itself is grid-agnostic: it works on ``(time, level, ny, nx)`` arrays
+whatever the two horizontal dims mean, so it runs unchanged on the regular
+lat/lon grids of ERA5/MERRA-2 and on CARRA-2's projected y/x grid. Dimension
+names come from ``reanlib.grid``.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import xarray as xr
+
+from .grid import hdims as grid_hdims
+from .grid import horizontal_coords
 
 RD = 287.04    # dry-air gas constant [J kg-1 K-1]
 G0 = 9.80665   # standard gravity [m s-2]
@@ -66,6 +74,8 @@ SOURCE_CITATIONS = {
     "era5": "ERA5 (Hersbach et al. 2020, QJRMS 146, 1999-2049), via CDS",
     "merra2": ("MERRA-2 (Gelaro et al. 2017, J. Climate 30, 5419-5454; "
                "GMAO GEOS 5.12.4), via NASA GES DISC"),
+    "carra2": ("CARRA-2 (Copernicus pan-Arctic Regional Reanalysis, "
+               "HARMONIE-AROME 2.5 km), via CDS"),
 }
 
 
@@ -181,7 +191,15 @@ def fixed_level_metrics(ds_plev: xr.Dataset, t2m: xr.DataArray,
 
 def compute_inversion_dataset(ds_plev: xr.Dataset, ds_sfc: xr.Dataset,
                               cfg: dict) -> xr.Dataset:
-    """Run all three metrics; returns one dataset on the (time, lat, lon) grid."""
+    """Run all three metrics; returns one dataset on the (time, y, x) grid.
+
+    The horizontal dims are whatever the inputs use — ``latitude``/
+    ``longitude`` for ERA5 and MERRA-2, ``y``/``x`` for CARRA-2.
+    """
+    horiz = grid_hdims(ds_plev)
+    if grid_hdims(ds_sfc) != horiz:
+        raise ValueError(f"plev grid dims {horiz} differ from sfc "
+                         f"{grid_hdims(ds_sfc)}")
     for coord in ("latitude", "longitude"):
         if not np.array_equal(ds_plev[coord].values, ds_sfc[coord].values):
             raise ValueError(f"{coord} grids of plev and sfc files differ")
@@ -191,10 +209,12 @@ def compute_inversion_dataset(ds_plev: xr.Dataset, ds_sfc: xr.Dataset,
     ds_plev = ds_plev.sel(valid_time=common)
     ds_sfc = ds_sfc.sel(valid_time=common)
 
-    dims = ("valid_time", "pressure_level", "latitude", "longitude")
+    dims = ("valid_time", "pressure_level") + horiz
     ds_plev = ds_plev.transpose(*dims)
-    t2m, skt = ds_sfc["t2m"], ds_sfc["skt"]
-    sp_hpa = ds_sfc["sp"] / 100.0
+    out_dims = ("valid_time",) + horiz
+    t2m = ds_sfc["t2m"].transpose(*out_dims)
+    skt = ds_sfc["skt"].transpose(*out_dims)
+    sp_hpa = ds_sfc["sp"].transpose(*out_dims) / 100.0
 
     sbi_cfg = cfg["sbi"]
     sbi = sbi_scan(
@@ -207,22 +227,29 @@ def compute_inversion_dataset(ds_plev: xr.Dataset, ds_sfc: xr.Dataset,
         min_strength_k=float(sbi_cfg["min_strength_k"]),
     )
 
-    hdims = ("valid_time", "latitude", "longitude")
-    coords = {d: ds_sfc[d] for d in hdims}
+    coords = {"valid_time": ds_sfc["valid_time"], **horizontal_coords(ds_sfc)}
     out = xr.Dataset(
         {
-            "sbi_strength": (hdims, sbi["strength"].astype(np.float32)),
-            "sbi_top_p": (hdims, sbi["top_p"].astype(np.float32)),
-            "sbi_depth_p": (hdims, sbi["depth_p"].astype(np.float32)),
-            "sbi_depth_z": (hdims, sbi["depth_z"].astype(np.float32)),
-            "sbi_found": (hdims, sbi["found"].astype(np.int8)),
+            "sbi_strength": (out_dims, sbi["strength"].astype(np.float32)),
+            "sbi_top_p": (out_dims, sbi["top_p"].astype(np.float32)),
+            "sbi_depth_p": (out_dims, sbi["depth_p"].astype(np.float32)),
+            "sbi_depth_z": (out_dims, sbi["depth_z"].astype(np.float32)),
+            "sbi_found": (out_dims, sbi["found"].astype(np.int8)),
         },
         coords=coords,
     )
     out = out.merge(fixed_level_metrics(ds_plev, t2m, sp_hpa, cfg).astype(np.float32))
     out["t2m"] = t2m.astype(np.float32)
     out["skt"] = skt.astype(np.float32)
-    out["sp"] = ds_sfc["sp"].astype(np.float32)
+    out["sp"] = ds_sfc["sp"].transpose(*out_dims).astype(np.float32)
+    # carry the CF grid mapping through so the map figures can rebuild the CRS,
+    # and the domain mask so area statistics can drop the cells that a
+    # projected bounding box includes but the requested area does not
+    from .grid import GRID_MAPPING_VAR
+
+    for name in (GRID_MAPPING_VAR, "domain_mask"):
+        if name in ds_sfc.variables:
+            out[name] = ds_sfc[name]
 
     meta = {
         "sbi_strength": ("K", "SBI strength: T(inversion top) - T(2 m)", "sbi"),

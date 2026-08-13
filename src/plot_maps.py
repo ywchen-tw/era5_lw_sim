@@ -19,9 +19,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from reanlib.config import figures_dir, inversion_path, load_config, source_label
+from reanlib.config import (SOURCES, figures_dir, inversion_path, load_config,
+                            source_label)
 from reanlib.io_era5 import open_era5
-from reanlib.mapping import polar_panel
+from reanlib.grid import domain_mask, latlon2d
+from reanlib.mapping import grid_kwargs, polar_panel
 from reanlib.plotstyle import apply_agu_style, panel_label
 
 # metric key -> (variable, title, colormap kind)
@@ -32,13 +34,16 @@ METRICS = {
 }
 
 
-def plot_metric_panel(ax, inv, key: str, south_lat: float) -> None:
+def plot_metric_panel(ax, inv, key: str, south_lat: float, gkw: dict) -> None:
     var, title, kind = METRICS[key]
-    da = inv[var]
+    field = inv[var].values
     if key == "sbi":
-        da = da.fillna(0.0)  # not-found = no inversion = 0 K strength
-    polar_panel(ax, da["latitude"].values, da["longitude"].values, da.values,
-                kind=kind, cbar_label=f"{title}  (K)", south_lat=south_lat)
+        # not-found = no inversion = 0 K strength, but only inside the domain:
+        # a projected bounding box has corners outside the requested area, and
+        # those carry no data rather than a zero-strength inversion
+        field = np.where(domain_mask(inv), np.nan_to_num(field), np.nan)
+    polar_panel(ax, field=field, kind=kind, cbar_label=f"{title}  (K)",
+                south_lat=south_lat, **gkw)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hour", type=int, required=True)
     parser.add_argument("--metrics", nargs="+", default=["sbi", "dt850", "dt925"],
                         choices=list(METRICS))
-    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+    parser.add_argument("--source", choices=list(SOURCES), default=None,
                         help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--outdir", default=None, help="default: figures/ from config")
@@ -67,8 +72,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(f"missing {inv_file}\nfix with: python src/daily_inversion.py "
                  f"--year {date.year} --month {date.month} --days {date.day}")
     inv = open_era5(inv_file).sel(valid_time=when)
-    # boundary exactly at the southernmost row so no background ring shows
-    south_lat = float(inv["latitude"].values.min())
+    gkw = grid_kwargs(inv)
+    # boundary exactly at the southernmost cell so no background ring shows
+    south_lat = float(np.nanmin(latlon2d(inv)[0]))
 
     n = len(args.metrics)
     fig, axes = plt.subplots(1, n, figsize=(4.8 * n, 5.9), squeeze=False,
@@ -77,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     # keep the axes region below the title so it clears the 180° labels
     fig.get_layout_engine().set(rect=(0, 0, 1, 0.92))
     for i, (ax, key) in enumerate(zip(axes[0], args.metrics)):
-        plot_metric_panel(ax, inv, key, south_lat)
+        plot_metric_panel(ax, inv, key, south_lat, gkw)
         panel_label(ax, "abcdefgh"[i], x=-0.02, y=1.05)
     masked_note = (" — gray: level below ground"
                    if any(METRICS[k][2] == "div" for k in args.metrics) else "")

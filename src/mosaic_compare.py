@@ -36,7 +36,9 @@ import numpy as np
 import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from reanlib.config import REPO_ROOT, figures_dir, inversion_path, load_config, pairs_path
+from reanlib.config import (REPO_ROOT, SOURCE_LABELS, SOURCES, figures_dir,
+                            inversion_path, load_config, pairs_path)
+from reanlib.grid import GridIndex
 from reanlib.io_era5 import open_era5
 from reanlib.mapping import polar_panel
 from reanlib.mosaic import sounding_profile
@@ -119,6 +121,7 @@ def match_reanalysis(cfg: dict, obs: xr.Dataset, max_dt_h: float = 3.0) -> xr.Da
                               "rean_dt_850_2m", "rean_dt_925_1000",
                               "rean_t2m", "match_dt_h", "match_km")}
     cache: dict = {}
+    index = None
     for ts, la, lo in zip(obs["time"].values, obs["lat"].values, obs["lon"].values):
         t_near = (ts + np.timedelta64(3, "h")).astype("datetime64[6h]").astype("datetime64[ns]")
         date = t_near.astype("datetime64[D]").item()
@@ -126,16 +129,17 @@ def match_reanalysis(cfg: dict, obs: xr.Dataset, max_dt_h: float = 3.0) -> xr.Da
             p = inversion_path(cfg, date)
             cache.clear()
             cache[date] = open_era5(p) if p.exists() else None
+            # one KD-tree per grid, not per sounding: on CARRA-2's 2.5 km mesh
+            # building it is the expensive part of the match
+            index = GridIndex(cache[date]) if cache[date] is not None else None
         inv = cache[date]
         dt_h = abs((t_near - ts) / np.timedelta64(1, "h"))
         if inv is None or dt_h > max_dt_h or not np.isfinite(la):
             for k in fields:
                 fields[k].append(np.nan)
             continue
-        col = inv.sel(valid_time=t_near, latitude=la, longitude=lo, method="nearest")
-        dlat = float(col["latitude"]) - la
-        dlon = (float(col["longitude"]) - lo + 180) % 360 - 180
-        km = np.hypot(dlat * 111.2, dlon * 111.2 * np.cos(np.deg2rad(la)))
+        (iy, ix), km = index.query(la, lo)
+        col = inv.sel(valid_time=t_near).isel(**index.isel(iy, ix))
         fields["rean_sbi_found"].append(float(col["sbi_found"]))
         fields["rean_strength"].append(float(col["sbi_strength"]))
         fields["rean_depth"].append(float(col["sbi_depth_z"]))
@@ -316,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sbi-base-max", type=float, default=100.0,
                         help="max obs inversion-base altitude (m) to count as "
                              "surface-based (default 100)")
-    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+    parser.add_argument("--source", choices=list(SOURCES), default=None,
                         help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--overwrite", action="store_true")
@@ -334,10 +338,10 @@ def main(argv: list[str] | None = None) -> int:
         if obs.sizes["time"] == 0:
             sys.exit(f"no MOSAiC soundings in {args.year}-{args.month:02d}")
         print(f"{obs.sizes['time']} MOSAiC soundings in {args.year}-{args.month:02d}, "
-              f"matching against {cfg['source'].upper()} ...")
+              f"matching against {SOURCE_LABELS[cfg['source']]} ...")
         obs = obs_fixed_metrics(obs)
         pairs = match_reanalysis(cfg, obs)
-        lab = {"era5": "ERA5", "merra2": "MERRA-2"}[cfg["source"]]
+        lab = SOURCE_LABELS[cfg["source"]]
         pairs.attrs = {
             "title": f"{lab} vs MOSAiC radiosonde inversion comparison",
             "source_label": lab,

@@ -37,9 +37,13 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from reanlib.config import analysis_path, figures_dir, inversion_path, load_config, plev_path, source_label
+from reanlib.config import (SOURCES, analysis_path, figures_dir, inversion_path,
+                            load_config, plev_path, source_label)
+from reanlib.grid import GRID_MAPPING_VAR, area_weights, grid_template
+from reanlib.grid import hdims as grid_hdims
+from reanlib.grid import horizontal_coords, weighted_mean
 from reanlib.io_era5 import open_era5
-from reanlib.mapping import polar_panel
+from reanlib.mapping import grid_kwargs, polar_panel
 from reanlib.plotstyle import apply_agu_style, panel_label
 
 T2M_BINS = np.arange(-50.0, 1.0, 1.0)        # degC
@@ -88,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--days", nargs="+", default=None)
     parser.add_argument("--top", type=float, default=400.0,
                         help="top pressure level of the PCA profiles (hPa)")
-    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+    parser.add_argument("--source", choices=list(SOURCES), default=None,
                         help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--overwrite", action="store_true")
@@ -119,11 +123,9 @@ def main(argv: list[str] | None = None) -> int:
 
     ev = out["explained_variance_ratio"].values
     print(f"  PCA explained variance: PC1 {ev[0]:.1%}, PC2 {ev[1]:.1%}, PC3 {ev[2]:.1%}")
+    w = area_weights(out)
     for name in ("r_strength_t2m", "r_strength_pc1", "r_strength_pc2"):
-        w = np.cos(np.deg2rad(out["latitude"].values))[:, None]
-        r = out[name].values
-        ok = np.isfinite(r)
-        print(f"  domain mean {name}: {np.nansum(r * w * ok) / (w * ok).sum():+.2f}")
+        print(f"  domain mean {name}: {weighted_mean(out[name].values, w):+.2f}")
 
     if not args.no_figures:
         outdir = figures_dir(cfg)
@@ -137,20 +139,20 @@ def compute(cfg: dict, dates: list[dt.date], top_hpa: float) -> xr.Dataset:
     # ---- pass 1: raw moments of the profile vectors -> mean + covariance
     sum_x = m2 = None
     n_samples = 0
-    lat = lon = levels = None
+    template = levels = horiz = None
     for date in dates:
         plev = open_era5(plev_path(cfg, date))
         inv = open_era5(inversion_path(cfg, date))
-        if lat is None:
-            lat = plev["latitude"].values
-            lon = plev["longitude"].values
+        if template is None:
+            horiz = grid_hdims(plev)
+            template = grid_template(inv)
             p = plev["pressure_level"].values.astype(float)
             levels = p[(p <= 1000.0) & (p >= top_hpa)]
             nlev = levels.size
             sum_x = np.zeros(nlev)
             m2 = np.zeros((nlev, nlev))
         T = (plev["t"].sel(pressure_level=levels)
-             .transpose("valid_time", "pressure_level", "latitude", "longitude")
+             .transpose("valid_time", "pressure_level", *horiz)
              .values.astype(np.float64))
         sp_hpa = inv["sp"].values / 100.0
         # sp >= 1000 hPa AND every PCA level finite (MERRA-2 masks marginal
@@ -174,7 +176,8 @@ def compute(cfg: dict, dates: list[dt.date], top_hpa: float) -> xr.Dataset:
     evr = eigval[:N_MODES] / eigval.sum()
 
     # ---- pass 2: PC scores, correlations, histograms
-    shape = (lat.size, lon.size)
+    w2d = area_weights(template)
+    shape = w2d.shape
     acc_t2m = CorrAccum(shape)
     acc_pc1 = CorrAccum(shape)
     acc_pc2 = CorrAccum(shape)
@@ -183,13 +186,12 @@ def compute(cfg: dict, dates: list[dt.date], top_hpa: float) -> xr.Dataset:
     sum_t2m = np.zeros(shape)
     sum_t2m2 = np.zeros(shape)
     n_time = 0
-    w2d = np.cos(np.deg2rad(lat))[:, None] * np.ones((1, lon.size))
 
     for date in dates:
         plev = open_era5(plev_path(cfg, date))
         inv = open_era5(inversion_path(cfg, date))
         T = (plev["t"].sel(pressure_level=levels)
-             .transpose("valid_time", "pressure_level", "latitude", "longitude")
+             .transpose("valid_time", "pressure_level", *horiz)
              .values.astype(np.float64))
         t2m = inv["t2m"].values.astype(np.float64)
         sp_hpa = inv["sp"].values / 100.0
@@ -220,7 +222,7 @@ def compute(cfg: dict, dates: list[dt.date], top_hpa: float) -> xr.Dataset:
     t2m_mean = sum_t2m / n_time
     t2m_std = np.sqrt(np.maximum(sum_t2m2 / n_time - t2m_mean**2, 0.0))
 
-    hdims = ("latitude", "longitude")
+    hdims = horiz
     out = xr.Dataset(
         {
             "mean_profile": (("level",), mean_profile),
@@ -235,13 +237,16 @@ def compute(cfg: dict, dates: list[dt.date], top_hpa: float) -> xr.Dataset:
             "hist_pc1_strength": (("pc_bin", "strength_bin"), h_pc1),
         },
         coords={
-            "latitude": lat, "longitude": lon, "level": levels,
+            **horizontal_coords(template), "level": levels,
             "mode": np.arange(1, N_MODES + 1),
             "t2m_bin": 0.5 * (T2M_BINS[:-1] + T2M_BINS[1:]),
             "strength_bin": 0.5 * (STRENGTH_BINS[:-1] + STRENGTH_BINS[1:]),
             "pc_bin": 0.5 * (PC_BINS[:-1] + PC_BINS[1:]),
         },
     )
+    for name in (GRID_MAPPING_VAR, "domain_mask"):
+        if name in template.variables:
+            out[name] = template[name]
     out.attrs = {
         "title": f"Monthly {source_label(cfg)} profile PCA / surface-T / correlation analysis",
         "n_pca_samples": n_samples,
@@ -291,13 +296,14 @@ def fig_pca(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
         ax.spines[side].set_visible(False)
     panel_label(ax, "b", x=-0.24, y=1.05)
 
-    lat, lon = out["latitude"].values, out["longitude"].values
+    gkw = grid_kwargs(out)
     for i, (var, label) in enumerate((
             ("r_strength_pc1", "corr(SBI strength, PC1)"),
             ("r_strength_pc2", "corr(SBI strength, PC2)"))):
         axm = fig.add_subplot(gs[2 + i], projection=ccrs.NorthPolarStereo())
-        polar_panel(axm, lat, lon, out[var].values, kind="div",
-                    vmin=-1.0, vmax=1.0, cbar_label=label, cbar_label_size=10)
+        polar_panel(axm, field=out[var].values, kind="div",
+                    vmin=-1.0, vmax=1.0, cbar_label=label, cbar_label_size=10,
+                    **gkw)
         panel_label(axm, "cd"[i], x=-0.02, y=1.08)
 
     fig.suptitle(f"Temperature-profile PCA and its relation to SBI strength — "
@@ -311,27 +317,27 @@ def fig_pca(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
 def fig_surface_t(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
     import cartopy.crs as ccrs
 
-    lat, lon = out["latitude"].values, out["longitude"].values
+    gkw = grid_kwargs(out)
     fig = plt.figure(figsize=(13.2, 11.0), layout="constrained")
     gs = fig.add_gridspec(2, 2)
 
     t2m_c = out["t2m_mean"].values - 273.15
     ax = fig.add_subplot(gs[0, 0], projection=ccrs.NorthPolarStereo())
-    polar_panel(ax, lat, lon, t2m_c, kind="seq", cmap=plt.get_cmap("magma"),
+    polar_panel(ax, field=t2m_c, kind="seq", cmap=plt.get_cmap("magma"),
                 vmin=float(np.nanpercentile(t2m_c, 1)),
                 vmax=float(np.nanpercentile(t2m_c, 99)),
-                cbar_label="monthly mean T 2 m  (°C)", cbar_label_size=10)
+                cbar_label="monthly mean T 2 m  (°C)", cbar_label_size=10, **gkw)
     panel_label(ax, "a", x=-0.02, y=1.05)
 
     ax = fig.add_subplot(gs[0, 1], projection=ccrs.NorthPolarStereo())
-    polar_panel(ax, lat, lon, out["t2m_std"].values, kind="seq",
-                cbar_label="T 2 m std. dev.  (K)", cbar_label_size=10)
+    polar_panel(ax, field=out["t2m_std"].values, kind="seq",
+                cbar_label="T 2 m std. dev.  (K)", cbar_label_size=10, **gkw)
     panel_label(ax, "b", x=-0.02, y=1.05)
 
     ax = fig.add_subplot(gs[1, 0], projection=ccrs.NorthPolarStereo())
-    polar_panel(ax, lat, lon, out["r_strength_t2m"].values, kind="div",
+    polar_panel(ax, field=out["r_strength_t2m"].values, kind="div",
                 vmin=-1.0, vmax=1.0,
-                cbar_label="corr(SBI strength, T 2 m)", cbar_label_size=10)
+                cbar_label="corr(SBI strength, T 2 m)", cbar_label_size=10, **gkw)
     panel_label(ax, "c", x=-0.02, y=1.05)
 
     ax = fig.add_subplot(gs[1, 1])

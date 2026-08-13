@@ -107,12 +107,12 @@ def draw_main() -> "plt.Figure":
             ha="center", va="top", fontsize=12, fontweight="bold")
 
     # column 1: external sources ------------------------------------------
-    s1 = box(ax, 1, 50, 14.5, 7, "Copernicus CDS\nERA5 pressure levels\n+ single levels", C_EXT)
+    s1 = box(ax, 1, 50, 14.5, 7, "Copernicus CDS / GES DISC\nERA5 · CARRA-2 · MERRA-2\npressure + single levels", C_EXT)
     s2 = box(ax, 1, 40, 14.5, 6, "Copernicus ADS\nCAMS EGG4\nCO2 / CH4", C_EXT)
     s3 = box(ax, 1, 20, 14.5, 7.5, "PANGAEA\nMOSAiC obs:\nJozef et al. 2023,\nMaturilli et al. 2021", C_EXT)
 
     # column 2: local data ------------------------------------------------
-    d1 = box(ax, 21.5, 50, 15, 7, "data/<src>/YYYY/MM/DD/\n<src>_{plev,sfc}_*.nc\nvia era5_download.py or\nmerra2_download.py", C_DATA)
+    d1 = box(ax, 21.5, 50, 15, 7, "data/<src>/YYYY/MM/DD/\n<src>_{plev,sfc}_*.nc\nvia era5_/merra2_/\ncarra2_download.py", C_DATA)
     d2 = box(ax, 21.5, 40, 15, 6, "data/cams/\nCO2/CH4 profiles via\ncams_download.py", C_DATA)
     d3 = box(ax, 21.5, 20, 15, 7.5, "data/mosaic/\nAtm_Properties.nc\n+ soundings/ (auto)", C_DATA)
     arrow(ax, s1, d1)

@@ -24,7 +24,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from reanlib.config import figures_dir, inversion_path, load_config, plev_path, sfc_path, source_label
+from reanlib.config import (SOURCES, figures_dir, inversion_path, load_config,
+                            plev_path, sfc_path, source_label)
+from reanlib.grid import GridIndex
+from reanlib.grid import hdims as grid_hdims
 from reanlib.inversion import column_heights
 from reanlib.io_era5 import open_era5
 from reanlib.plotstyle import apply_agu_style, panel_label
@@ -37,38 +40,44 @@ C_SHADE = "#0072B2"     # inversion layer tint (low alpha)
 C_GRID = "#d9d9d9"
 
 
-def pick_points(inv: "xr.Dataset", how: list[str]) -> list[dict]:
-    """Select illustration points from one time snapshot of the derived dataset."""
+def pick_points(inv: "xr.Dataset", index: GridIndex, how: list[str]) -> list[dict]:
+    """Select illustration points from one time snapshot of the derived dataset.
+
+    Each point carries the ``isel`` selector of the chosen cell as well as its
+    coordinates, so the caller reads that exact cell on either grid family.
+    """
     import xarray as xr  # noqa: F401  (type hint only)
 
+    horiz = grid_hdims(inv)
     strength = inv["sbi_strength"]
     found = inv["sbi_found"].astype(bool)
     points = []
     for tag in how:
         if tag == "strongest":
-            target = strength.fillna(-np.inf).argmax(("latitude", "longitude"))
+            target = strength.fillna(-np.inf).argmax(horiz)
         elif tag == "weakest":
             # clearest no-inversion column: most negative T850-T2m among not-found
             cand = inv["dt_850_2m"].where(~found)
             if np.isfinite(cand).any():
-                target = cand.fillna(np.inf).argmin(("latitude", "longitude"))
+                target = cand.fillna(np.inf).argmin(horiz)
             else:  # every column has an inversion: take the weakest one
-                target = strength.fillna(np.inf).argmin(("latitude", "longitude"))
+                target = strength.fillna(np.inf).argmin(horiz)
         elif tag == "median":
             med = strength.median()
-            target = abs(strength - med).fillna(np.inf).argmin(("latitude", "longitude"))
+            target = abs(strength - med).fillna(np.inf).argmin(horiz)
         else:
             raise ValueError(f"unknown point selector {tag!r}")
-        lat = float(inv["latitude"][target["latitude"]])
-        lon = float(inv["longitude"][target["longitude"]])
-        points.append({"lat": lat, "lon": lon, "label": tag})
+        iy, ix = (int(target[horiz[0]]), int(target[horiz[1]]))
+        lat, lon = index.latlon(iy, ix)
+        points.append({"isel": index.isel(iy, ix), "lat": lat, "lon": lon,
+                       "label": tag})
     return points
 
 
-def plot_profile_panel(ax, ds_plev, inv, lat: float, lon: float, label: str,
-                       src_lab: str = "ERA5") -> None:
-    col = ds_plev.sel(latitude=lat, longitude=lon, method="nearest")
-    ivn = inv.sel(latitude=lat, longitude=lon, method="nearest")
+def plot_profile_panel(ax, ds_plev, inv, point: dict, src_lab: str = "ERA5") -> None:
+    lat, lon, label = point["lat"], point["lon"], point["label"]
+    col = ds_plev.isel(**point["isel"])
+    ivn = inv.isel(**point["isel"])
     sp_hpa = float(ivn["sp"]) / 100.0
     t2m, skt = float(ivn["t2m"]), float(ivn["skt"])
 
@@ -154,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lat", type=float, default=None,
                         help="plot a single explicit point instead of --points")
     parser.add_argument("--lon", type=float, default=None)
-    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+    parser.add_argument("--source", choices=list(SOURCES), default=None,
                         help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--outdir", default=None, help="default: figures/ from config")
@@ -174,16 +183,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if (args.lat is None) != (args.lon is None):
         sys.exit("--lat and --lon must be given together")
+    index = GridIndex(inv)
     if args.lat is not None:
-        points = [{"lat": args.lat, "lon": args.lon, "label": "selected"}]
+        (iy, ix), dist_km = index.query(args.lat, args.lon)
+        lat, lon = index.latlon(iy, ix)
+        print(f"nearest cell to ({args.lat}, {args.lon}): "
+              f"({lat:.3f}, {lon:.3f}), {dist_km:.1f} km away")
+        points = [{"isel": index.isel(iy, ix), "lat": lat, "lon": lon,
+                   "label": "selected"}]
     else:
-        points = pick_points(inv, args.points)
+        points = pick_points(inv, index, args.points)
 
     n = len(points)
     fig, axes = plt.subplots(1, n, figsize=(4.6 * n, 5.2), squeeze=False)
     for i, (ax, pt) in enumerate(zip(axes[0], points)):
-        plot_profile_panel(ax, ds_plev, inv, pt["lat"], pt["lon"], pt["label"],
-                           src_lab=source_label(cfg))
+        plot_profile_panel(ax, ds_plev, inv, pt, src_lab=source_label(cfg))
         panel_label(ax, "abcdefgh"[i], x=-0.16, y=1.08)
     axes[0][0].set_ylabel("pressure (hPa)")
     handles, labels = axes[0][0].get_legend_handles_labels()

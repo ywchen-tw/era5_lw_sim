@@ -1,7 +1,8 @@
-# Arctic Temperature-Inversion Pipeline (ERA5 / MERRA-2)
+# Arctic Temperature-Inversion Pipeline (ERA5 / MERRA-2 / CARRA-2)
 
 Automated pipeline that downloads reanalysis data over the Arctic (80–90°N by
-default) from **ERA5** (Copernicus CDS) or **MERRA-2** (NASA GES DISC),
+default) from **ERA5** (Copernicus CDS), **MERRA-2** (NASA GES DISC) or
+**CARRA-2** (Copernicus CDS, 2.5 km regional),
 computes temperature-inversion strength with three metrics, aggregates
 monthly climatologies, analyzes profile variability (PCA) and
 surface-temperature relationships, validates against MOSAiC radiosondes, and
@@ -9,9 +10,11 @@ simulates clear-sky broadband LW fluxes with libRadtran for comparison with
 ERA5 radiation — with AGU-style figures at every stage.
 
 The data source is selected with `source:` in `config.yaml` or `--source
-{era5,merra2}` on any analysis stage (see "Data sources" below). Stages 1-8
-(incl. the RRTMG cross-check and the PREFIRE BT simulation) run on either
-source; stage 7c (the hourly state-time test) is ERA5-only.
+{era5,merra2,carra2}` on any analysis stage (see "Data sources" below).
+ERA5 and MERRA-2 run stages 1-8 (incl. the RRTMG cross-check and the PREFIRE
+BT simulation); stage 7c (the hourly state-time test) is ERA5-only. CARRA-2
+runs stages 1-6 — it publishes no ozone, and its radiation lives in the
+forecast stream, so the radiative-transfer stages do not accept it yet.
 
 ## Workflow at a glance
 
@@ -28,6 +31,7 @@ era5_analysis/
 ├── src/
 │   ├── era5_download.py         # stage 1 (ERA5): CDS downloads (parallel, idempotent)
 │   ├── merra2_download.py       # stage 1 (MERRA-2): GES DISC OPeNDAP subsets
+│   ├── carra2_download.py       # stage 1 (CARRA-2): CDS pan-Arctic subsets
 │   ├── daily_inversion.py       # stage 2: daily inversion metrics
 │   ├── plot_profiles.py         # stage 3a: profile illustration figures
 │   ├── plot_maps.py             # stage 3b: polar snapshot maps
@@ -42,7 +46,7 @@ era5_analysis/
 │   ├── mosaic_flux.py           # LW simulation at every MOSAiC-matched column
 │   ├── prefire_download.py      # PREFIRE TIRS granules + SRFs (stage 8)
 │   ├── prefire_bt.py            # stage 8: PREFIRE BT simulation + Jacobians
-│   └── reanlib/                 # shared code: config, per-source I/O, science, maps, style
+│   └── reanlib/                 # shared code: config, per-source I/O, grids, science, maps, style
 ├── slurm/                       # CURC job templates (stages 7/8)
 ├── data/<source>/YYYY/MM/DD/    # raw daily files: <source>_{plev,sfc}_YYYYMMDD.nc
 ├── data/mosaic/                 # MOSAiC observations (PANGAEA download)
@@ -53,8 +57,8 @@ era5_analysis/
 └── figures/<source>/
 ```
 
-(`<source>` is `era5` or `merra2`. The repo directory and conda env keep the
-historical name "era5"; the pipeline itself is source-agnostic.)
+(`<source>` is `era5`, `merra2` or `carra2`. The repo directory and conda env
+keep the historical name "era5"; the pipeline itself is source-agnostic.)
 
 ## Setup
 
@@ -72,8 +76,9 @@ key: <your-personal-access-token>
 
 The token is shown at <https://cds.climate.copernicus.eu/profile> (see
 <https://cds.climate.copernicus.eu/how-to-api>). You must also accept the
-licence terms on each ERA5 dataset's download page once, or requests are
-rejected.
+licence terms on each dataset's download page once, or requests are
+rejected — CARRA-2 (`reanalysis-pan-carra`) carries its own licence
+separate from ERA5's.
 
 For MERRA-2 (and PREFIRE), NASA Earthdata credentials are required instead:
 register at <https://urs.earthdata.nasa.gov>, add to `~/.netrc`
@@ -87,16 +92,21 @@ application once under Earthdata Applications → Authorized Apps.
 
 ## Data sources
 
-Two interchangeable reanalysis sources; pick with `source:` in `config.yaml`
+Three interchangeable reanalysis sources; pick with `source:` in `config.yaml`
 (default `era5`) or per run with `--source` on stages 2–6:
 
-| | ERA5 | MERRA-2 |
-|---|---|---|
-| Downloader | `src/era5_download.py` (CDS) | `src/merra2_download.py` (GES DISC) |
-| Profiles | hourly analysis, 37 levels, 0.25° | `M2I3NPASM`: 3-hourly instantaneous, 42 levels, 0.5°×0.625° |
-| Surface | hourly analysis | `M2I1NXASM`: hourly instantaneous |
-| Below-ground levels | extrapolated values | fill values (NaN) |
-| Preliminary data | ERA5T (`expver 0005`), warned | none (GES DISC latency ~3–4 weeks) |
+| | ERA5 | MERRA-2 | CARRA-2 |
+|---|---|---|---|
+| Downloader | `src/era5_download.py` (CDS) | `src/merra2_download.py` (GES DISC) | `src/carra2_download.py` (CDS) |
+| Profiles | hourly analysis, 37 levels, 0.25° | `M2I3NPASM`: 3-hourly instantaneous, 42 levels, 0.5°×0.625° | 3-hourly analysis, 20 levels, 2.5 km |
+| Surface | hourly analysis | `M2I1NXASM`: hourly instantaneous | 3-hourly analysis (instantaneous) |
+| Grid | regular lat/lon | regular lat/lon | north polar stereographic (`y`/`x`, 2-D lat/lon) |
+| Profile top | 1 hPa | 0.1 hPa | 50 hPa |
+| Humidity | `specific_humidity` | `QV` | derived from `relative_humidity` |
+| Ozone | yes | yes | **none** |
+| Below-ground levels | extrapolated values | fill values (NaN) | fill values (NaN) |
+| Preliminary data | ERA5T (`expver 0005`), warned | none (GES DISC latency ~3–4 weeks) | none |
+| Stages | 1–8 (+7c) | 1–8 | 1–6 |
 
 MERRA-2 granules are subset server-side over OPeNDAP (only the 80–90°N band
 is transferred) and normalized on write to the ERA5 variable/coordinate
@@ -140,6 +150,57 @@ MERRA-2 notes:
   −0.5 W/m² — cloud emission dominates and the clear-sky LW↓ offset largely
   disappears.
 
+### CARRA-2 (regional, 2.5 km)
+
+CARRA-2 is the Copernicus pan-Arctic Regional Reanalysis (HARMONIE-AROME),
+downloaded from the **sub-daily** CDS entry `reanalysis-pan-carra` — the
+`reanalysis-pan-carra-means` entry linked from the catalogue overview holds
+only daily and monthly aggregates and cannot feed the inversion metrics.
+All level types live in that one entry, and it supports `area` subsetting.
+CARRA-2 notes:
+
+- **It is a regional model on a projected grid**, so its files keep the
+  native 2.5 km north polar-stereographic mesh: dims `y`/`x` with 2-D
+  `latitude(y, x)` / `longitude(y, x)` and a CF `polar_stereographic` grid
+  mapping. Stages 2–6 go through `src/reanlib/grid.py` (`hdims`,
+  `area_weights`, `GridIndex`, `grid_template`) instead of assuming 1-D
+  lat/lon, so the same code runs on all three sources.
+- Area statistics are weighted by **relative cell area**: cos(latitude) on a
+  regular grid, and (1 + sin(latitude))² on the polar stereographic — the
+  standard parallel enters the scale factor only as a constant and cancels
+  in a normalized mean, so no projection metadata is needed.
+- The CDS subsets in *projection* space, so a delivery always over-covers the
+  requested latitude band. `io_carra2.clip_to_area` trims to the smallest
+  y/x rectangle containing the band and records the in-band cells in
+  `domain_mask`; those corner cells are masked in the data and carry zero
+  area weight, so they never dilute a statistic or appear as "no SBI".
+- **No specific humidity on pressure levels.** `q` is derived from the
+  delivered `relative_humidity` with Alduchov & Eskridge (1996) Magnus
+  coefficients, treating RH as the vapour-pressure ratio e/e_sat. CARRA
+  documents its relative humidity against saturation over **water**
+  (`carra2.rh_over` in `config.yaml`; `ice` and `mixed` are available for
+  sensitivity tests). q enters stages 2–6 only through the virtual-temperature
+  correction to the hypsometric `sbi_depth_z`, where the choice is worth far
+  less than 1 m.
+- **No ozone at all, and the profile top is 50 hPa** rather than ERA5's
+  1 hPa. Neither matters for the inversion metrics (the SBI scan stops at
+  500 hPa), but both do matter for radiative transfer, which is why
+  `lrt_sim.py` / `rrtmg_sim.py` do not accept `--source carra2`: a stage-7
+  port would need a climatological ozone profile and a standard-atmosphere
+  splice from 50 hPa up instead of from 1 hPa.
+- **Radiation is in the forecast stream, not the analysis.** Surface fluxes
+  (`thermal_surface_radiation_downwards`, `surface_net_thermal_radiation`)
+  require `product_type: forecast` with a `leadtime_hour`, and are
+  accumulated from the cycle start — so a stage-7 reference flux needs a
+  second request and leadtime differencing, unlike ERA5's single sfc file.
+- Analyses exist 3-hourly (00, 03, … 21 UTC); the downloader rejects hours
+  off that cadence rather than silently returning forecast data. The 20
+  pressure levels include 1000/950/925/900/875/850, so the SBI scan and both
+  fixed-level metrics carry over unchanged.
+- **Volume.** At 2.5 km the 80–90°N cap is ~620 k cells against ERA5's
+  ~59 k, so a day of profiles is a few GB rather than a few tens of MB.
+  Start with a single day before committing to a month.
+
 ## Usage
 
 ```bash
@@ -147,6 +208,8 @@ MERRA-2 notes:
 python src/era5_download.py --year 2020 --month 1 --days 1-31 --jobs 6
 #    ... or the same days from MERRA-2 (add --source merra2 to stages 2-6 below)
 python src/merra2_download.py --year 2020 --month 1 --days 1-31 --jobs 4
+#    ... or from CARRA-2 (add --source carra2 to stages 2-6 below)
+python src/carra2_download.py --year 2020 --month 1 --days 1-31 --jobs 4
 
 # 2. compute daily inversion metrics
 python src/daily_inversion.py --year 2020 --month 1 --days 1-31 --check
@@ -179,6 +242,9 @@ python src/mosaic_compare.py --year 2020 --month 1
 - `merra2_download.py` mirrors the same CLI (`--jobs`, `--dry-run`,
   `--force`, hour-merging idempotency). `--full-granule` downloads whole
   ~1.5 GB granules and subsets locally if OPeNDAP misbehaves.
+- `carra2_download.py` mirrors that CLI too, and normalizes each delivery on
+  write (ERA5 variable names, `q` from relative humidity, cloud cover as a
+  fraction, x/y + grid mapping, `domain_mask`).
 - Stage 6 needs `data/mosaic/MOSAiC_Atm_Properties.nc`; fetch it once with
   `curl -L -o data/mosaic/MOSAiC_Atm_Properties.nc
   https://download.pangaea.de/dataset/957760/files/MOSAiC_Atm_Properties.nc`.
@@ -602,6 +668,10 @@ SW_up = ssrd - ssr        LW_up = strd - str
 
 - ERA5 (Hersbach et al. 2020, *QJRMS* **146**, 1999–2049), Copernicus Climate
   Data Store.
+- CARRA-2 (Copernicus pan-Arctic Regional Reanalysis, HARMONIE-AROME 2.5 km),
+  Copernicus Climate Data Store, dataset `reanalysis-pan-carra`
+  (doi:10.24381/f5effe24); see the
+  [CARRA2 Data User Guide](https://confluence.ecmwf.int/display/CKB/Copernicus+pan-Arctic+Regional+Reanalysis+(CARRA2):+Data+User+Guide).
 - MOSAiC lower-atmospheric properties: Jozef, G. C., et al. (2023), *ESSD*
   **15**, doi:10.5194/essd-15-4983-2023; dataset doi:10.1594/PANGAEA.957760
   (CC-BY-4.0).

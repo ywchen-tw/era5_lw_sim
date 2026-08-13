@@ -37,6 +37,22 @@ the README. Update this file when a stage lands or a plan changes.
       (`daily_inversion.py`, `monthly_stats.py`, …); MOSAiC pairs variables
       `era5_*` → `rean_*`. Stages 7/7b/8 have since gained MERRA-2 support
       (see below); only 7c remains ERA5-only.
+- [x] **CARRA-2 as a third data source (stages 1–6)** — `--source carra2`,
+      `carra2_download.py` (CDS `reanalysis-pan-carra`, the SUB-daily entry;
+      `-means` is aggregates only), `reanlib/io_carra2.py` (normalize on
+      write: ERA5 names, `q` from relative humidity via Alduchov & Eskridge
+      Magnus, cloud cover to fraction, x/y + CF grid mapping, `domain_mask`).
+      CARRA-2 is *regional*, so the native 2.5 km polar-stereographic grid is
+      kept (dims `y`/`x`, 2-D lat/lon) rather than regridded — stages 2–6 were
+      generalized through the new `reanlib/grid.py` (`hdims`, `area_weights`
+      with the (1+sin φ)² polar-stereographic weight, `GridIndex` KD-tree
+      nearest-neighbour, `grid_template`, `horizontal_coords`,
+      `projection_crs`) and `mapping.grid_kwargs`, which draws a projected
+      grid in its own CRS so no date-line seam appears at the pole. ERA5 and
+      MERRA-2 outputs verified numerically unchanged (Jan 2020: 61.6 % SBI
+      frequency / 6.43 K, EOF1 73.6 % / EOF2 14.4 %, MOSAiC 78.9 % agreement,
+      r = +0.27, biases −2.00 K / +315 m / +2.95 K — all as documented).
+
 - [x] **Stage 7c — hourly state-time test** (`statetime_test.py`,
       `lrt_sim.py prep --pixels-from`): 11Z + 13Z added for
       2020-01-01, the 12Z 500-pixel set re-simulated at 11Z. Verdict: the
@@ -85,6 +101,27 @@ the README. Update this file when a stage lands or a plan changes.
       so vertical-resolution smoothing isn't misread as state bias.
 
 ## Backlog / ideas
+
+- [ ] **CARRA-2 stage 7 (LW closure)** — blocked on two source gaps, both
+      documented in the README: CARRA-2 publishes **no ozone** (needs a
+      climatological profile) and its profile top is **50 hPa**, so the
+      standard-atmosphere splice starts there instead of at 1 hPa. Its
+      surface radiation is also **forecast-stream only**
+      (`product_type: forecast` + `leadtime_hour`, accumulated from the cycle
+      start), so the reference flux needs a second request and leadtime
+      differencing rather than ERA5's single sfc file. At 2.5 km a
+      lower-resolution pixel sample would be the sane starting point.
+- [ ] **CARRA-2 vs ERA5 at matched resolution** — the obvious science use of
+      the new source: does a 2.5 km regional model produce systematically
+      stronger/shallower SBIs than 0.25° ERA5 over the same MOSAiC soundings?
+      Stage 6 already runs on both; the comparison needs one shared month
+      downloaded (mind the volume note in the README) and a joint figure.
+- [ ] **CARRA-2 first real-data validation** — the stages were verified on a
+      synthetic delivery through the real normalizer plus the unchanged
+      ERA5/MERRA-2 regressions; the first genuine CDS delivery should be
+      checked for coordinate spelling (the netCDF converter is documented as
+      experimental — GRIB is the native format) and for whether below-ground
+      pressure levels arrive as fill values or extrapolated.
 
 - [x] **MERRA-2 stage 7, clear-sky** — `lrt_sim.py`/`rrtmg_sim.py --source
       merra2`; `M2T1NXRAD` fetched as the `rad` dataset (1-h means stamped
@@ -140,9 +177,12 @@ the README. Update this file when a stage lands or a plan changes.
 ## Standing constraints
 
 - Run stages under the right conda env (era5 vs er3t_env; see README).
-- Data source: `--source {era5,merra2}` on stages 2–6 (default from
+- Data source: `--source {era5,merra2,carra2}` on stages 2–6 (default from
   config.yaml `source:`); each downloader is pinned to its own source.
-  MERRA-2 needs Earthdata credentials in `~/.netrc`; ERA5 needs
-  `~/.cdsapirc`.
+  MERRA-2 needs Earthdata credentials in `~/.netrc`; ERA5 and CARRA-2 need
+  `~/.cdsapirc` (and each CDS dataset's licence accepted once, separately).
+- Never assume 1-D `latitude`/`longitude`: CARRA-2 is on a projected `y`/`x`
+  grid. Horizontal reductions, nearest-cell lookups and map panels go through
+  `reanlib/grid.py` and `mapping.grid_kwargs`.
 - `reptran fine`/`medium` never on the local Mac — CURC only.
 - Commits are made locally on request; pushing is done by the user.

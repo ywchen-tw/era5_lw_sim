@@ -36,9 +36,13 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from reanlib.config import figures_dir, inversion_path, load_config, monthly_path, source_label
+from reanlib.config import (SOURCES, figures_dir, inversion_path, load_config,
+                            monthly_path, source_label)
+from reanlib.grid import GRID_MAPPING_VAR, area_weights, domain_mask, grid_template
+from reanlib.grid import hdims as grid_hdims
+from reanlib.grid import horizontal_coords, weighted_mean
 from reanlib.io_era5 import open_era5
-from reanlib.mapping import polar_panel
+from reanlib.mapping import grid_kwargs, polar_panel
 from reanlib.plotstyle import apply_agu_style, panel_label
 
 STRENGTH_BINS = np.arange(0.0, 25.5, 0.5)    # K
@@ -51,16 +55,18 @@ def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
     hist_strength = np.zeros(STRENGTH_BINS.size - 1)
     hist_sd = np.zeros((STRENGTH_BINS.size - 1, DEPTH_BINS.size - 1))
     ts_time, ts_found, ts_cond, ts_uncond = [], [], [], []
-    lat = lon = w2d = None
+    template = w2d = valid = None
     n_time = 0
 
     for path in files:
         ds = open_era5(path)
-        if lat is None:
-            lat = ds["latitude"].values
-            lon = ds["longitude"].values
-            w2d = np.cos(np.deg2rad(lat))[:, None] * np.ones((1, lon.size))
-            shape = (lat.size, lon.size)
+        if template is None:
+            # keep the grid description of the first file: coordinates, the CF
+            # grid mapping (CARRA-2) and the domain mask all come from it
+            template = grid_template(ds)
+            w2d = area_weights(ds)
+            valid = domain_mask(ds)
+            shape = w2d.shape
             for key in ("found", "strength_found", "depth_p", "depth_z", "top_p",
                         "strength_uncond", "dt850", "dt925"):
                 sums[key] = np.zeros(shape)
@@ -109,12 +115,19 @@ def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
         dt850 = np.where(sums["n_dt850"] > 0, sums["dt850"] / sums["n_dt850"], np.nan)
         dt925 = np.where(sums["n_dt925"] > 0, sums["dt925"] / sums["n_dt925"], np.nan)
 
-    hdims = ("latitude", "longitude")
+    # cells outside the requested area exist only because a projected bounding
+    # box is rectangular; blank them rather than reporting them as "no SBI"
+    freq, cond, depth_p, depth_z, top_p, dt850, dt925 = (
+        np.where(valid, f, np.nan)
+        for f in (freq, cond, depth_p, depth_z, top_p, dt850, dt925))
+    strength_uncond = np.where(valid, sums["strength_uncond"] / n_time, np.nan)
+
+    hdims = grid_hdims(template)
     out = xr.Dataset(
         {
             "sbi_frequency": (hdims, freq.astype(np.float32)),
             "sbi_strength_cond": (hdims, cond.astype(np.float32)),
-            "sbi_strength_uncond": (hdims, (sums["strength_uncond"] / n_time).astype(np.float32)),
+            "sbi_strength_uncond": (hdims, strength_uncond.astype(np.float32)),
             "sbi_depth_p_mean": (hdims, depth_p.astype(np.float32)),
             "sbi_depth_z_mean": (hdims, depth_z.astype(np.float32)),
             "sbi_top_p_mean": (hdims, top_p.astype(np.float32)),
@@ -127,12 +140,15 @@ def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
             "ts_strength_uncond": (("time",), np.array(ts_uncond, dtype=np.float32)),
         },
         coords={
-            "latitude": lat, "longitude": lon,
+            **horizontal_coords(template),
             "strength_bin": 0.5 * (STRENGTH_BINS[:-1] + STRENGTH_BINS[1:]),
             "depth_bin": 0.5 * (DEPTH_BINS[:-1] + DEPTH_BINS[1:]),
             "time": np.array(ts_time),
         },
     )
+    for name in (GRID_MAPPING_VAR, "domain_mask"):
+        if name in template.variables:
+            out[name] = template[name]
     units = {"sbi_frequency": "1", "sbi_strength_cond": "K", "sbi_strength_uncond": "K",
              "sbi_depth_p_mean": "hPa", "sbi_depth_z_mean": "m", "sbi_top_p_mean": "hPa",
              "dt_850_2m_mean": "K", "dt_925_1000_mean": "K",
@@ -144,9 +160,10 @@ def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
         "source_label": label,
         "n_time_steps": n_time,
         "n_days": len(files),
-        "note": ("area statistics cos(latitude)-weighted; *_cond over detected "
-                 "SBIs only (intensity, Zhang et al. 2011); *_uncond counts "
-                 "not-found as 0 K"),
+        "note": ("area statistics weighted by relative cell area (cos(latitude) "
+                 "on a regular grid, (1+sin(latitude))^2 on the CARRA-2 polar "
+                 "stereographic); *_cond over detected SBIs only (intensity, "
+                 "Zhang et al. 2011); *_uncond counts not-found as 0 K"),
         "expver_last_file": expver,
     }
     return out
@@ -155,7 +172,7 @@ def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
 def fig_maps(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
     import cartopy.crs as ccrs
 
-    lat, lon = out["latitude"].values, out["longitude"].values
+    gkw = grid_kwargs(out)
     panels = [
         ("sbi_frequency", "SBI frequency  (fraction of time)", "seq", dict(vmax=1.0)),
         ("sbi_strength_cond", "SBI strength, detected cases  (K)", "seq", {}),
@@ -168,8 +185,8 @@ def fig_maps(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
     fig.get_layout_engine().set(rect=(0, 0, 1, 0.95))
     axes = axes.ravel()
     for i, (var, label, kind, kw) in enumerate(panels):
-        polar_panel(axes[i], lat, lon, out[var].values, kind=kind,
-                    cbar_label=label, **kw)
+        polar_panel(axes[i], field=out[var].values, kind=kind,
+                    cbar_label=label, **gkw, **kw)
         panel_label(axes[i], "abcdefgh"[i], x=-0.02, y=1.05)
     axes[-1].set_visible(False)
     fig.suptitle(f"{out.attrs.get('source_label', 'ERA5')} monthly temperature-inversion statistics — "
@@ -259,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="subset of days (default: whole month)")
     parser.add_argument("--skip-missing", action="store_true",
                         help="aggregate whatever daily files exist")
-    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+    parser.add_argument("--source", choices=list(SOURCES), default=None,
                         help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--overwrite", action="store_true")
@@ -298,14 +315,11 @@ def main(argv: list[str] | None = None) -> int:
                                         for v in out.data_vars})
         print(f"wrote {target}")
 
-    w = np.cos(np.deg2rad(out["latitude"].values))[:, None]
+    w = area_weights(out)
     freq = out["sbi_frequency"].values
     cond = out["sbi_strength_cond"].values
-    wsum = (w * np.ones_like(freq)).sum()
-    print(f"  domain mean SBI frequency      : {(freq * w).sum() / wsum:.1%}")
-    ok = np.isfinite(cond)
-    print(f"  domain mean conditional strength: "
-          f"{np.nansum(cond * w) / (w * ok).sum():.2f} K")
+    print(f"  domain mean SBI frequency      : {weighted_mean(freq, w):.1%}")
+    print(f"  domain mean conditional strength: {weighted_mean(cond, w):.2f} K")
 
     if not args.no_figures:
         outdir = figures_dir(cfg)

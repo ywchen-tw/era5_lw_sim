@@ -1,7 +1,7 @@
 # Arctic inversion pipeline — user-editable defaults.
 # CLI arguments override these where applicable.
 
-# Default reanalysis data source: era5 | merra2 (per-stage override: --source).
+# Default reanalysis data source: era5 | merra2 | carra2 (override: --source).
 source: era5
 
 # Download / analysis domain as [North, West, South, East] (degrees).
@@ -56,6 +56,37 @@ merra2:
   rad_variables: [LWGAB, LWGEM, LWGABCLR, EMIS, CLDTOT]
   # Hours must be multiples of 3 (the M2I3NPASM cadence).
   default_hours: [0, 6, 12, 18]
+
+# CARRA-2 (Copernicus pan-Arctic Regional Reanalysis) — src/carra2_download.py.
+# HARMONIE-AROME at 2.5 km on a north polar-stereographic grid, so unlike the
+# global sources these files keep projected y/x dims with 2-D latitude and
+# longitude; the analysis stages handle both layouts via reanlib/grid.py.
+carra2:
+  # the SUB-DAILY entry: reanalysis-pan-carra-means holds only daily/monthly
+  # aggregates, which cannot feed the inversion metrics
+  dataset: reanalysis-pan-carra
+  # CARRA-2 has no specific humidity on pressure levels (q is derived from
+  # relative_humidity) and no ozone at all, which is why stage 7 does not
+  # accept --source carra2.
+  plev_variables:
+    - temperature
+    - relative_humidity
+    - specific_cloud_liquid_water_content
+    - specific_cloud_ice_water_content
+    - cloud_cover
+  sfc_variables:
+    - 2m_temperature
+    - skin_temperature
+    - surface_pressure
+    - land_sea_mask
+  # All 20 CARRA-2 pressure levels. The top is 50 hPa, not ERA5's 1 hPa.
+  pressure_levels: [50, 70, 100, 150, 200, 250, 300, 400, 500, 600, 700,
+                    750, 800, 825, 850, 875, 900, 925, 950, 1000]
+  # Analyses run 3-hourly (00, 03, ... 21 UTC); other hours are forecast only.
+  default_hours: [0, 6, 12, 18]
+  # Saturation reference for the RH -> q conversion: water | ice | mixed.
+  # CARRA documents its relative humidity against saturation over water.
+  rh_over: water
 
 # Surface-based inversion (SBI) scan parameters.
 sbi:

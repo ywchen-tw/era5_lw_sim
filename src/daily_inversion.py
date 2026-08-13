@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Compute temperature-inversion metrics from downloaded ERA5 files.
+"""Compute temperature-inversion metrics from downloaded reanalysis files.
 
-Reads data/YYYY/MM/DD/era5_{plev,sfc}_YYYYMMDD.nc and writes
-derived/YYYY/MM/DD/era5_inversion_YYYYMMDD.nc with SBI (profile scan),
-dt_850_2m and dt_925_1000 metrics. See reanlib/inversion.py for definitions
-and references.
+Reads data/<source>/YYYY/MM/DD/<source>_{plev,sfc}_YYYYMMDD.nc and writes
+derived/<source>/YYYY/MM/DD/<source>_inversion_YYYYMMDD.nc with SBI (profile
+scan), dt_850_2m and dt_925_1000 metrics. See reanlib/inversion.py for
+definitions and references.
 
 Examples:
     python src/daily_inversion.py --year 2025 --month 1 --days 1
@@ -22,32 +22,40 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from reanlib.config import inversion_path, load_config, plev_path, sfc_path
+from reanlib.config import SOURCES, inversion_path, load_config, plev_path, sfc_path
+from reanlib.grid import domain_mask
 from reanlib.inversion import compute_inversion_dataset
 from reanlib.io_era5 import open_era5
+
+DOWNLOADERS = {"era5": "era5_download.py", "merra2": "merra2_download.py",
+               "carra2": "carra2_download.py"}
 
 
 def check_report(ds) -> str:
     """Physical-plausibility summary of one day's metrics."""
     lines = []
     found = ds["sbi_found"].values.astype(bool)
+    # a projected grid's bounding box includes cells outside the requested
+    # area; they carry no data and must not dilute the statistics
+    inside = domain_mask(ds)
+    found = found[:, inside]
     lines.append(f"grid points x times : {found.size}")
     lines.append(f"SBI found fraction  : {found.mean():.1%}")
     for name in ("sbi_strength", "sbi_depth_p", "sbi_depth_z",
                  "dt_850_2m", "dt_925_1000"):
-        v = ds[name].values
+        v = ds[name].values[:, inside]
         v = v[np.isfinite(v)]
         if v.size:
             lines.append(f"{name:<20}: min {v.min():7.2f}  median {np.median(v):7.2f}  "
                          f"max {v.max():7.2f} {ds[name].attrs['units']}")
         else:
             lines.append(f"{name:<20}: all NaN")
-    sp_hpa = ds["sp"].values / 100.0
+    sp_hpa = ds["sp"].values[:, inside] / 100.0
     n_low = int((sp_hpa < 1000).sum())
-    n_masked = int(np.isnan(ds["dt_925_1000"].values).sum())
+    n_masked = int(np.isnan(ds["dt_925_1000"].values[:, inside]).sum())
     lines.append(f"sp < 1000 hPa points: {n_low} (dt_925_1000 NaN: {n_masked})")
-    top_ok = np.all(np.isnan(ds["sbi_top_p"].values)
-                    | (ds["sbi_top_p"].values <= sp_hpa + 1e-6))
+    top_p = ds["sbi_top_p"].values[:, inside]
+    top_ok = np.all(np.isnan(top_p) | (top_p <= sp_hpa + 1e-6))
     lines.append(f"sbi_top_p <= sp     : {'OK' if top_ok else 'VIOLATED'}")
     return "\n".join("  " + s for s in lines)
 
@@ -60,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="day numbers and/or A-B ranges, e.g. 1 2 5-7")
     parser.add_argument("--hours", type=int, nargs="+", default=None,
                         help="subset of UTC hours (default: all in the file)")
-    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+    parser.add_argument("--source", choices=list(SOURCES), default=None,
                         help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None, help="path to config.yaml")
     parser.add_argument("--overwrite", action="store_true")
@@ -83,8 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             names = ", ".join(str(m) for m in missing)
             sys.exit(f"{date}: missing input {names}\n"
-                     f"fix with: python src/era5_download.py --year {date.year} "
-                     f"--month {date.month} --days {date.day}")
+                     f"fix with: python src/{DOWNLOADERS[cfg['source']]} "
+                     f"--year {date.year} --month {date.month} --days {date.day}")
 
         ds_plev = open_era5(plev_path(cfg, date))
         ds_sfc = open_era5(sfc_path(cfg, date))
