@@ -97,6 +97,12 @@ carra2:
                     750, 800, 825, 850, 875, 900, 925, 950, 1000]
   # Analyses run 3-hourly (00, 03, ... 21 UTC); other hours are forecast only.
   default_hours: [0, 6, 12, 18]
+  # Days bundled into ONE CDS request (--chunk-days overrides). The archive
+  # queues per request, not per byte -- with 65 concurrent slots and a backlog
+  # observed in the thousands, the number of requests is what sets wall-clock.
+  # 31 makes January 2 queue positions instead of 62. Lower it if a chunk is
+  # rejected as too large.
+  chunk_days: 31
   # Saturation reference for the RH -> q conversion: water | ice | mixed.
   # CARRA documents its relative humidity against saturation over water.
   rh_over: water

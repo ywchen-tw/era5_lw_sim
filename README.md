@@ -226,7 +226,13 @@ CARRA-2 notes:
   thousands, and the downloader issues one request per day per level type
   (62 for a month). Trimming a request speeds up MARS extraction and
   transfer, but **not** the queue wait — only issuing fewer requests does
-  that.
+  that. `carra2.chunk_days` (default 31, `--chunk-days` overrides) bundles
+  days into one request and splits the delivery back into daily files, so
+  January costs **2 queue positions instead of 62**. Lower it if a chunk is
+  rejected as too large. For the same reason `carra2_download.py` runs its
+  requests in separate *processes*: several CDS clients polling concurrently
+  inside one interpreter were seen to fail every status check with
+  `[Errno 9] Bad file descriptor`.
 
 ## Usage
 

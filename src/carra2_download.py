@@ -50,16 +50,25 @@ LEVEL_TYPES = {"plev": "pressure_levels", "sfc": "single_levels"}
 ANALYSIS_STEP_H = 3
 
 
-def build_request(cfg: dict, kind: str, date: dt.date, hours: list[int],
+def build_request(cfg: dict, kind: str, dates: list[dt.date], hours: list[int],
                   area: list[float]) -> dict:
+    """One CDS request covering every date in ``dates``.
+
+    The CDS expands year/month/day as a cartesian product, so a request must
+    not span months — ``main`` only ever chunks within the month it was asked
+    for, which keeps the product exact.
+    """
+    months = {(d.year, d.month) for d in dates}
+    if len(months) != 1:
+        raise ValueError(f"a request must stay within one month, got {sorted(months)}")
     c2 = cfg["carra2"]
     request = {
         "level_type": LEVEL_TYPES[kind],
         "product_type": "analysis",
         "variable": c2["plev_variables"] if kind == "plev" else c2["sfc_variables"],
-        "year": [f"{date.year:04d}"],
-        "month": [f"{date.month:02d}"],
-        "day": [f"{date.day:02d}"],
+        "year": [f"{dates[0].year:04d}"],
+        "month": [f"{dates[0].month:02d}"],
+        "day": [f"{d.day:02d}" for d in dates],
         "time": [f"{h:02d}:00" for h in hours],
         "data_format": "netcdf",
         "area": area,
@@ -67,6 +76,12 @@ def build_request(cfg: dict, kind: str, date: dt.date, hours: list[int],
     if kind == "plev":
         request["level_location"] = [str(p) for p in c2["pressure_levels"]]
     return request
+
+
+def chunked(items: list, size: int) -> list[list]:
+    """Split into consecutive chunks of at most ``size`` items."""
+    size = max(1, int(size))
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def open_delivery(path: Path):
@@ -91,54 +106,121 @@ def open_delivery(path: Path):
     return merged
 
 
-def write_normalized(raw: Path, target: Path, kind: str, cfg: dict,
-                     area: list[float]) -> None:
-    """Normalize a raw delivery and write the daily file, replacing it atomically."""
+def _split_static(ds):
+    """Separate the time-varying variables from the grid description.
+
+    ``domain_mask`` and the grid-mapping variable have no time dimension, so
+    they must be held aside when concatenating slabs along ``valid_time``.
+    """
+    static = [v for v in ds.data_vars if "valid_time" not in ds[v].dims]
+    return ds.drop_vars(static), ds[static]
+
+
+def _merge_existing(out, target: Path):
+    """Union of a fresh slab with the hours already in ``target``.
+
+    Existing hours are preserved rather than replaced, so re-running for a
+    different hour set never silently drops previously downloaded times. If
+    the file on disk holds a different variable set (e.g. it predates a
+    change to ``carra2.plev_variables``) it is replaced outright, since
+    concatenating mismatched variables is not meaningful.
+    """
+    import numpy as np
+    import xarray as xr
+
+    if not target.exists():
+        return out, "downloaded"
+    try:
+        with xr.open_dataset(target) as handle:
+            old = handle.load()
+    except Exception:
+        return out, "downloaded"          # unreadable: replace it
+    if set(old.data_vars) != set(out.data_vars):
+        return out, "replaced (variable set changed)"
+
+    old_t, _ = _split_static(old)
+    new_t, static = _split_static(out)
+    combined = xr.concat([old_t, new_t], dim="valid_time")
+    _, keep = np.unique(combined["valid_time"].values, return_index=True)
+    combined = combined.isel(valid_time=np.sort(keep)).sortby("valid_time")
+    # static vars were dropped from `combined`, so there is nothing to reconcile
+    merged = combined.merge(static, compat="override")
+    merged.attrs = out.attrs
+    status = "merged" if merged.sizes["valid_time"] > out.sizes["valid_time"] else "downloaded"
+    return merged, status
+
+
+def write_normalized_chunk(raw: Path, kind: str, cfg: dict, area: list[float],
+                           dates: list[dt.date]) -> dict[dt.date, str]:
+    """Normalize a multi-day delivery and split it into one file per day."""
+    import numpy as np
+    import pandas as pd
+
     ds = open_delivery(raw)
     try:
-        out = normalize_carra2(ds, kind, cfg, area=area)
-        out = out.sortby("valid_time")
-        tmp_nc = target.with_suffix(".nc.norm")
-        encoding = {v: {"zlib": True, "complevel": 4} for v in out.data_vars}
-        out.to_netcdf(tmp_nc, encoding=encoding)
+        whole = normalize_carra2(ds, kind, cfg, area=area).sortby("valid_time").load()
     finally:
         ds.close()
-    os.replace(tmp_nc, target)
+
+    path_fn = plev_path if kind == "plev" else sfc_path
+    stamps = pd.DatetimeIndex(whole["valid_time"].values)
+    results: dict[dt.date, str] = {}
+    for date in dates:
+        idx = np.flatnonzero(stamps.date == date)
+        if idx.size == 0:
+            results[date] = "FAILED: no time steps for this day in the delivery"
+            continue
+        target = path_fn(cfg, date)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        out, status = _merge_existing(whole.isel(valid_time=idx), target)
+        tmp_nc = target.with_suffix(".nc.norm")
+        out.to_netcdf(tmp_nc, encoding={v: {"zlib": True, "complevel": 4}
+                                        for v in out.data_vars})
+        os.replace(tmp_nc, target)
+        results[date] = status
+    return results
 
 
-def download_one(kind: str, cfg: dict, date: dt.date, hours: list[int],
-                 area: list[float], target: Path, force: bool, dry_run: bool) -> str:
-    """Returns 'downloaded' | 'merged' | 'skipped' | 'dry-run' | 'FAILED: ...'.
+def download_chunk(kind: str, cfg: dict, dates: list[dt.date], hours: list[int],
+                   area: list[float], force: bool, dry_run: bool) -> dict[dt.date, str]:
+    """Fetch one chunk of days in a single CDS request, then split it per day.
 
-    Creates its own CDS client so calls are safe to run from worker threads.
+    Batching matters far more than request size when the archive is busy: the
+    CDS queues per request, so a month costs 62 queue positions one day at a
+    time and 2 as whole-month chunks. Returns a per-date status.
+
+    Runs in its own process (see ``main``), so the CDS client it builds shares
+    no socket state with any other worker.
     """
-    status = "downloaded"
+    path_fn = plev_path if kind == "plev" else sfc_path
     want = set(hours)
-    if target.exists() and not force:
-        have = hours_in_file(target, date)
-        if want <= have:
-            return "skipped"
-        hours = sorted(want | have)
-        status = "merged"
+    todo = [d for d in dates
+            if force or not (want <= hours_in_file(path_fn(cfg, d), d))]
+    skipped = {d: "skipped" for d in dates if d not in todo}
+    if not todo:
+        return skipped
 
-    request = build_request(cfg, kind, date, hours, area)
+    request = build_request(cfg, kind, todo, hours, area)
     if dry_run:
-        print(f"  request for {target.name}:")
+        span = f"{todo[0]:%Y-%m-%d}..{todo[-1]:%Y-%m-%d}" if len(todo) > 1 else f"{todo[0]}"
+        print(f"  request for {kind} {span} ({len(todo)} day(s)):")
         print("  " + json.dumps(request, indent=2).replace("\n", "\n  "))
-        return "dry-run"
+        return {**skipped, **{d: "dry-run" for d in todo}}
 
     import cdsapi
 
+    raw = path_fn(cfg, todo[0]).with_suffix(f".{kind}-chunk.part")
     try:
         client = cdsapi.Client(quiet=True, progress=False)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        raw = target.with_suffix(".nc.part")
+        raw.parent.mkdir(parents=True, exist_ok=True)
         client.retrieve(cfg["carra2"]["dataset"], request).download(str(raw))
-        write_normalized(raw, target, kind, cfg, area)
+        results = write_normalized_chunk(raw, kind, cfg, area, todo)
         raw.unlink(missing_ok=True)
     except Exception as exc:
-        return f"FAILED: {exc}"
-    return status
+        # the raw delivery is deliberately left in place: a normalization bug
+        # is then fixable offline instead of costing another queue position
+        return {**skipped, **{d: f"FAILED: {exc}" for d in todo}}
+    return {**skipped, **results}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -155,9 +237,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--datasets", nargs="+", choices=["plev", "sfc"],
                         default=["plev", "sfc"])
     parser.add_argument("--config", default=None, help="path to config.yaml")
+    parser.add_argument("--chunk-days", type=int, default=None,
+                        help="days bundled into ONE CDS request (default from "
+                             "config). The archive queues per request, not per "
+                             "byte, so bundling is what shortens a month: 31 "
+                             "gives 2 queue positions for January, 1 gives 62")
     parser.add_argument("--jobs", type=int, default=4,
                         help="concurrent CDS requests (default 4); queue waits "
-                             "overlap so this speeds up multi-day downloads")
+                             "overlap so this speeds up multi-chunk downloads")
     parser.add_argument("--force", action="store_true",
                         help="re-download even if complete")
     parser.add_argument("--dry-run", action="store_true",
@@ -180,30 +267,40 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         require_cds_credentials()
 
-    path_fn = {"plev": plev_path, "sfc": sfc_path}
-    tasks = [(dt.date(args.year, args.month, day), kind)
-             for day in days for kind in args.datasets]
+    chunk_days = (args.chunk_days if args.chunk_days is not None
+                  else cfg["carra2"].get("chunk_days", 31))
+    dates = [dt.date(args.year, args.month, day) for day in days]
+    tasks = [(chunk, kind) for chunk in chunked(dates, chunk_days)
+             for kind in args.datasets]
+    print(f"{len(dates)} day(s) x {len(args.datasets)} level type(s) "
+          f"-> {len(tasks)} CDS request(s) at {chunk_days} day(s) each", flush=True)
 
     if args.dry_run:
-        for date, kind in tasks:
-            print(f"{date} {kind}:")
-            download_one(kind, cfg, date, hours, area, path_fn[kind](cfg, date),
-                         args.force, True)
+        for chunk, kind in tasks:
+            download_chunk(kind, cfg, chunk, hours, area, args.force, True)
         return 0
 
+    # separate processes, not threads: the CDS client keeps socket state that
+    # has been seen to break when several of them poll concurrently in one
+    # interpreter ([Errno 9] Bad file descriptor on every status check)
     failures = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        futures = {pool.submit(download_one, kind, cfg, date, hours, area,
-                               path_fn[kind](cfg, date), args.force, False): (date, kind)
-                   for date, kind in tasks}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        futures = {pool.submit(download_chunk, kind, cfg, chunk, hours, area,
+                               args.force, False): (chunk, kind)
+                   for chunk, kind in tasks}
         for fut in concurrent.futures.as_completed(futures):
-            date, kind = futures[fut]
-            result = fut.result()
-            print(f"{date} {kind}: {result}", flush=True)
-            if result.startswith("FAILED"):
-                failures += 1
-    done = len(tasks) - failures
-    print(f"{done}/{len(tasks)} requests completed" +
+            chunk, kind = futures[fut]
+            try:
+                results = fut.result()
+            except Exception as exc:                      # worker died outright
+                results = {d: f"FAILED: {exc}" for d in chunk}
+            for date in chunk:
+                result = results.get(date, "FAILED: no result returned")
+                print(f"{date} {kind}: {result}", flush=True)
+                if result.startswith("FAILED"):
+                    failures += 1
+    total = len(dates) * len(args.datasets)
+    print(f"{total - failures}/{total} day-files written" +
           (f", {failures} FAILED (rerun the same command to retry)" if failures else ""))
     return 1 if failures else 0
 
