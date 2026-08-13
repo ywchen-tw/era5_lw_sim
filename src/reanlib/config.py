@@ -72,13 +72,13 @@ DEFAULTS: dict = {
         # (199 k vs 796 k cells per field, ~318 MB vs 1.27 GB of profiles per
         # day). The global `area` stays 80-90N for ERA5 and MERRA-2.
         "area": [90, -180, 85, 180],
-        # CARRA-2 carries no specific humidity on pressure levels, so q is
-        # derived from relative_humidity (see reanlib/io_carra2.py)
-        "plev_variables": ["temperature", "relative_humidity",
-                           "specific_cloud_liquid_water_content",
-                           "specific_cloud_ice_water_content", "cloud_cover"],
-        "sfc_variables": ["2m_temperature", "skin_temperature", "surface_pressure",
-                          "land_sea_mask"],
+        # Only what stages 1-6 read: q is derived from relative_humidity
+        # (CARRA-2 has no specific humidity on pressure levels). The cloud
+        # fields cost 2.5x the volume and no stage 1-6 opens them; add
+        # specific_cloud_{liquid,ice}_water_content and cloud_cover back if
+        # radiative-transfer work ever needs them.
+        "plev_variables": ["temperature", "relative_humidity"],
+        "sfc_variables": ["2m_temperature", "skin_temperature", "surface_pressure"],
         # the 20 CARRA-2 pressure levels; the top is 50 hPa, not ERA5's 1 hPa
         "pressure_levels": [50, 70, 100, 150, 200, 250, 300, 400, 500, 600, 700,
                             750, 800, 825, 850, 875, 900, 925, 950, 1000],

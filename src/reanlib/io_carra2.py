@@ -35,14 +35,18 @@ EPSILON = 0.621981
 PROJ_CENTRAL_LON = 0.0
 PROJ_STANDARD_PARALLEL = 90.0
 
-# Variables required in each delivery, in pipeline (ERA5-convention) spelling.
-# CARRA-2's GRIB short names already match ERA5's for these fields; the CDS may
-# instead use the long CDS names, which VAR_ALIASES maps. 'r' (relative
-# humidity) is converted to 'q' during normalization rather than renamed, and
-# 'lsm' is optional.
+# Variables recognized in each delivery, in pipeline (ERA5-convention)
+# spelling. CARRA-2's GRIB short names already match ERA5's for these fields;
+# the CDS may instead use the long CDS names, which VAR_ALIASES maps. 'r'
+# (relative humidity) is converted to 'q' during normalization, not renamed.
 PLEV_VARS = ("t", "r", "clwc", "ciwc", "cc")
 SFC_VARS = ("t2m", "skt", "sp", "lsm")
-OPTIONAL_VARS = frozenset({"lsm"})
+# Everything the inversion metrics actually need is mandatory; the rest is
+# accepted when present and skipped when the config does not request it, so
+# `carra2.plev_variables` can be trimmed to shrink a download without
+# breaking normalization. Stages 1-6 read only t and q (from r), plus
+# t2m/skt/sp -- the cloud fields and lsm are for future radiative-transfer work.
+OPTIONAL_VARS = frozenset({"clwc", "ciwc", "cc", "lsm"})
 KIND_VARS = {"plev": PLEV_VARS, "sfc": SFC_VARS}
 
 # CDS deliveries have used several coordinate spellings; map them all.

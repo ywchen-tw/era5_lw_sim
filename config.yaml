@@ -80,17 +80,18 @@ carra2:
   # CARRA-2 has no specific humidity on pressure levels (q is derived from
   # relative_humidity) and no ozone at all, which is why stage 7 does not
   # accept --source carra2.
+  # Trimmed to exactly what stages 1-6 read. The three cloud fields cost 2.5x
+  # the download (318 -> 127 MB/day at 85-90N) and no stage 1-6 opens them;
+  # land_sea_mask is unread too, and there is no land above 85N. Add them back
+  # here if radiative-transfer work ever needs them -- normalization treats
+  # them as optional either way.
   plev_variables:
     - temperature
     - relative_humidity
-    - specific_cloud_liquid_water_content
-    - specific_cloud_ice_water_content
-    - cloud_cover
   sfc_variables:
     - 2m_temperature
     - skin_temperature
     - surface_pressure
-    - land_sea_mask
   # All 20 CARRA-2 pressure levels. The top is 50 hPa, not ERA5's 1 hPa.
   pressure_levels: [50, 70, 100, 150, 200, 250, 300, 400, 500, 600, 700,
                     750, 800, 825, 850, 875, 900, 925, 950, 1000]

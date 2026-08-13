@@ -214,10 +214,19 @@ CARRA-2 notes:
   soundings (86.7–87.6°N) sit inside it, so stage 6 is unaffected. Widen it
   with `carra2.area` or `--area` when the spatial climatology matters more
   than the volume.
+- The default `plev_variables` are **only `temperature` and
+  `relative_humidity`** — all stages 1–6 read is `t` and `q` (derived from
+  `r`), so the three cloud fields would cost 2.5× the download (318 →
+  127 MB/day) for data nothing opens. `land_sea_mask` is dropped for the same
+  reason, and there is no land above 85°N anyway. Normalization treats all
+  four as optional, so adding them back in `config.yaml` is enough if
+  radiative-transfer work ever needs them.
 - Note that CDS **queue latency is per request**, not per byte: the archive
   runs 65 concurrent jobs against a backlog that has been observed in the
   thousands, and the downloader issues one request per day per level type
-  (62 for a month). Trimming a request does not shorten its wait.
+  (62 for a month). Trimming a request speeds up MARS extraction and
+  transfer, but **not** the queue wait — only issuing fewer requests does
+  that.
 
 ## Usage
 
