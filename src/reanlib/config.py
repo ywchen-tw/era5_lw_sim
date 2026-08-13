@@ -84,11 +84,12 @@ DEFAULTS: dict = {
                             750, 800, 825, 850, 875, 900, 925, 950, 1000],
         "default_hours": [0, 6, 12, 18],
         "state_cadence_h": 3,
-        # Days bundled into ONE CDS request. The archive queues per request,
-        # not per byte, so this is the lever that shortens a month: 31 makes
-        # January 2 queue positions instead of 62. Lower it if a chunk is
-        # rejected as too large.
-        "chunk_days": 31,
+        # Days bundled into ONE CDS request, per level type. The archive
+        # queues per request rather than per byte, so this is the lever that
+        # shortens a month: January costs 4 queue positions here instead of
+        # 62. The ceiling is the CDS cost limit of 12000 -- at these
+        # variables/levels/area a profile day costs 960 and a surface day 72.
+        "chunk_days": {"plev": 12, "sfc": 31},
         # saturation reference for the RH -> q conversion. CARRA documents its
         # relative humidity against saturation over water; "ice" and "mixed"
         # (water above 0 C, ice below -23 C, blended between) are available for

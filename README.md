@@ -226,10 +226,18 @@ CARRA-2 notes:
   thousands, and the downloader issues one request per day per level type
   (62 for a month). Trimming a request speeds up MARS extraction and
   transfer, but **not** the queue wait — only issuing fewer requests does
-  that. `carra2.chunk_days` (default 31, `--chunk-days` overrides) bundles
-  days into one request and splits the delivery back into daily files, so
-  January costs **2 queue positions instead of 62**. Lower it if a chunk is
-  rejected as too large. For the same reason `carra2_download.py` runs its
+  that. `carra2.chunk_days` bundles days into one request and splits the
+  delivery back into daily files, so January costs **4 queue positions
+  instead of 62**. It is set per level type because the CDS rejects any
+  request above a **cost limit of 12000**, and at the configured
+  variables/levels/area a profile day costs **960** against a surface day's
+  **72** — so `plev: 12` (12 × 960 = 11520) and `sfc: 31`. Adding variables or
+  levels scales the cost proportionally; an over-large request is refused
+  immediately at submission with `cost limits exceeded`, not after queueing,
+  and the downloader appends the fix to that message. You can price a request
+  without submitting it by POSTing it to
+  `/api/retrieve/v1/processes/reanalysis-pan-carra/costing`. For the same
+  reason `carra2_download.py` runs its
   requests in separate *processes*: several CDS clients polling concurrently
   inside one interpreter were seen to fail every status check with
   `[Errno 9] Bad file descriptor`.

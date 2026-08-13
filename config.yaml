@@ -97,12 +97,18 @@ carra2:
                     750, 800, 825, 850, 875, 900, 925, 950, 1000]
   # Analyses run 3-hourly (00, 03, ... 21 UTC); other hours are forecast only.
   default_hours: [0, 6, 12, 18]
-  # Days bundled into ONE CDS request (--chunk-days overrides). The archive
-  # queues per request, not per byte -- with 65 concurrent slots and a backlog
-  # observed in the thousands, the number of requests is what sets wall-clock.
-  # 31 makes January 2 queue positions instead of 62. Lower it if a chunk is
-  # rejected as too large.
-  chunk_days: 31
+  # Days bundled into ONE CDS request, per level type (--chunk-days overrides
+  # both). The archive queues per request, not per byte -- with 65 concurrent
+  # slots and a backlog observed in the thousands, the NUMBER of requests is
+  # what sets wall-clock. This makes January 4 queue positions instead of 62.
+  # The ceiling is the CDS cost limit of 12000: with the variables, levels and
+  # area above, a profile day costs 960 and a surface day 72, so plev tops out
+  # at 12 days per request (12*960 = 11520) and sfc fits a whole month.
+  # Adding variables or levels raises the cost proportionally; an over-large
+  # request is rejected immediately at submission, not after queueing.
+  chunk_days:
+    plev: 12
+    sfc: 31
   # Saturation reference for the RH -> q conversion: water | ice | mixed.
   # CARRA documents its relative humidity against saturation over water.
   rh_over: water

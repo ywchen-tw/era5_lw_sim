@@ -84,6 +84,25 @@ def chunked(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
+def chunk_days_for(cfg: dict, kind: str, override: int | None = None) -> int:
+    """Days per request for one level type.
+
+    ``carra2.chunk_days`` may be a single number or a per-level-type mapping,
+    because the two differ by more than an order of magnitude in CDS "cost".
+    The archive rejects a request above a cost limit of 12000; at the default
+    variables/levels/area a profile day costs 960 and a surface day 72, so
+    plev tops out at 12 days per request and sfc comfortably takes a month.
+    Changing ``plev_variables``, ``pressure_levels`` or ``area`` changes the
+    cost proportionally — the rejection is immediate and says so.
+    """
+    if override is not None:
+        return int(override)
+    value = cfg["carra2"].get("chunk_days", 12)
+    if isinstance(value, dict):
+        return int(value.get(kind, 12))
+    return int(value)
+
+
 def open_delivery(path: Path):
     """Open a CDS delivery as one dataset, merging a zipped multi-part reply.
 
@@ -219,7 +238,11 @@ def download_chunk(kind: str, cfg: dict, dates: list[dt.date], hours: list[int],
     except Exception as exc:
         # the raw delivery is deliberately left in place: a normalization bug
         # is then fixable offline instead of costing another queue position
-        return {**skipped, **{d: f"FAILED: {exc}" for d in todo}}
+        hint = ""
+        if "cost limits exceeded" in str(exc) or "too large" in str(exc):
+            hint = (f" -- lower carra2.chunk_days (or --chunk-days) below "
+                    f"{len(todo)} for {kind}, or trim variables/levels")
+        return {**skipped, **{d: f"FAILED: {exc}{hint}" for d in todo}}
     return {**skipped, **results}
 
 
@@ -267,13 +290,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         require_cds_credentials()
 
-    chunk_days = (args.chunk_days if args.chunk_days is not None
-                  else cfg["carra2"].get("chunk_days", 31))
     dates = [dt.date(args.year, args.month, day) for day in days]
-    tasks = [(chunk, kind) for chunk in chunked(dates, chunk_days)
-             for kind in args.datasets]
-    print(f"{len(dates)} day(s) x {len(args.datasets)} level type(s) "
-          f"-> {len(tasks)} CDS request(s) at {chunk_days} day(s) each", flush=True)
+    tasks, plan = [], []
+    for kind in args.datasets:
+        n = chunk_days_for(cfg, kind, args.chunk_days)
+        groups = chunked(dates, n)
+        tasks += [(chunk, kind) for chunk in groups]
+        plan.append(f"{kind} {len(groups)} x <={n}d")
+    print(f"{len(dates)} day(s) -> {len(tasks)} CDS request(s)  "
+          f"({', '.join(plan)})", flush=True)
 
     if args.dry_run:
         for chunk, kind in tasks:
