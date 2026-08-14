@@ -350,44 +350,65 @@ related two-level stability metrics are LTS (Klein & Hartmann 1993,
 *J. Climate* **6**, 1587–1606) and EIS (Wood & Bretherton 2006, *J. Climate*
 **19**, 6425–6432).
 
-## CARRA-2 January 2020 first results
+## Three-source comparison, January 2020
 
-Whole month, 85–90°N, 4 analyses/day. The **MOSAiC comparison is
-like-for-like with ERA5** — the same 123 soundings, the same times and
-places — so those columns can be read against each other directly. The
-monthly climatology cannot: CARRA-2 covers 85–90°N against ERA5's 80–90°N.
+All three sources run through stages 1–6 with identical code. The **MOSAiC
+comparison is like-for-like**: the same 123 soundings, the same times and
+places, so these columns can be read against each other directly.
 
-| vs 123 MOSAiC soundings | ERA5 | CARRA-2 |
-|---|---|---|
-| median match distance | 7 km | **1 km** |
-| T2m bias | **+2.95 K** (r +0.79) | **−0.79 K** (r +0.76) |
-| SBI detection agreement | 78.9 % | 74.0 % |
-| SBI frequency (obs 67.5 %) | 64.2 % | 93.5 % |
-| SBI strength | r +0.27, bias −2.00 K | r +0.36, bias **+2.69 K** |
-| SBI depth | bias +315 m | bias +398 m |
-| T(850)−T(2 m) | r +0.60, bias −3.00 K | r +0.67, bias +1.06 K |
-| T(925)−T(1000) | r +0.80, bias −1.04 K | r +0.75, bias +1.02 K |
+| vs 123 MOSAiC soundings | ERA5 | MERRA-2 | CARRA-2 |
+|---|---|---|---|
+| grid | 0.25° | 0.5°×0.625° | 2.5 km |
+| median / max match distance | 7 / 14 km | 9 / 27 km | **1 / 2 km** |
+| T2m bias | **+2.95 K** (r +0.79) | **+3.09 K** (r +0.87) | **−0.79 K** (r +0.76) |
+| SBI frequency (obs 67.5 %) | 64.2 % | 63.4 % | 93.5 % |
+| SBI detection agreement | 78.9 % | 76.4 % | 74.0 % |
+| SBI strength | r +0.27, bias −2.00 K | r +0.50, bias −2.35 K | r +0.36, bias **+2.69 K** |
+| SBI depth | r +0.37, bias +315 m | r +0.53, bias +338 m | r +0.52, bias +398 m |
+| T(850)−T(2 m) | r +0.60, bias −3.00 K | r +0.70, bias −3.42 K | r +0.67, bias +1.06 K |
+| T(925)−T(1000) | r +0.80, bias −1.04 K | r +0.65, bias −0.15 K | r +0.75, bias +1.02 K |
 
-**The two reanalyses err in opposite directions.** CARRA-2 essentially
-removes ERA5's documented Arctic warm-surface bias (+2.95 → −0.79 K) and
-improves both fixed-level correlations, and its 2.5 km grid cuts the
-collocation distance sevenfold. But it then *over*-detects surface-based
-inversions — 93.5 % of soundings against 67.5 % observed — and overestimates
-their strength (+2.69 K) and depth (+398 m), where ERA5 underestimated
-strength (−2.00 K) from a surface that was too warm. A colder surface makes
-inversions stronger and easier to detect, which is consistent with both the
-improvement and the overshoot having one origin.
+**The warm-surface bias is not an ERA5 quirk.** ERA5 and MERRA-2 agree on it
+to within 0.14 K (+2.95 and +3.09 K) despite unrelated models, assimilation
+systems and grids — so it is a property of global reanalysis over Arctic sea
+ice, not of one product. CARRA-2, a 2.5 km regional model over the same
+soundings, is the only one that removes it (−0.79 K). MERRA-2 meanwhile has
+the *best* T2m correlation of the three (r +0.87): it tracks the variability
+well and is simply offset.
 
-Monthly means over 85–90°N: SBI frequency 92.0 %, conditional strength
-9.78 K. Profile PCA gives EOF1 72.8 % and EOF2 13.9 %, within a point of
-ERA5's 73.6 % / 14.4 % over its own domain — the vertical structure
-decomposes almost identically even though the surface climate differs.
-SBI strength correlates with T2m at **r = −0.74** against ERA5's −0.20, a
-far sharper expression of the Zhang et al. (2011) anti-correlation.
+**The two families then fail in opposite directions.** Both global sources
+under-detect surface-based inversions (64.2 %, 63.4 % against 67.5 % observed)
+and underestimate their strength (−2.00, −2.35 K) — consistent with a surface
+held too warm. CARRA-2 overshoots the other way: 93.5 % detection and
++2.69 K. A colder surface makes inversions stronger and easier to detect, so
+CARRA-2's gain on T2m and its overshoot on inversion frequency plausibly
+share one origin, and neither family is uniformly "better" — ERA5 has the
+best detection agreement, MERRA-2 the best strength correlation among the
+global pair, CARRA-2 much the best surface temperature and collocation.
 
-Caveat worth keeping: the monthly figures are 85–90°N pack ice only. Nothing
-here compares the two sources over Greenland or the ice edge, which is where
-2.5 km would be expected to matter most.
+All three overestimate SBI depth by 315–398 m, which no amount of horizontal
+resolution fixes: it is set by pressure-level vertical spacing against 5 m
+radiosonde profiles.
+
+Monthly climatology — **comparable only between ERA5 and MERRA-2**, both on
+80–90°N, while CARRA-2 sits on 85–90°N:
+
+| 80–90°N unless noted | ERA5 | MERRA-2 | CARRA-2 (85–90°N) |
+|---|---|---|---|
+| SBI frequency | 61.6 % | 43.8 % | 92.0 % |
+| conditional strength | 6.43 K | 5.93 K | 9.78 K |
+| EOF1 / EOF2 | 73.6 / 14.4 % | 66.4 / 16.8 % | 72.8 / 13.9 % |
+| r(SBI strength, T2m) | −0.20 | −0.29 | −0.74 |
+
+ERA5 and MERRA-2 differ by 18 points in SBI frequency on identical domains —
+a criterion-sensitivity result in its own right, given how similar their
+surface biases are. The profile PCA is stable across all three (EOF1
+66–74 %), so the vertical structure decomposes almost identically even where
+the surface climate does not.
+
+Caveat worth keeping: the CARRA-2 column covers 85–90°N pack ice only.
+Nothing here compares the sources over Greenland or the ice edge, which is
+where 2.5 km would be expected to matter most.
 
 ## January 2020 case study (current results)
 

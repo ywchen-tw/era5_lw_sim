@@ -111,14 +111,25 @@ the README. Update this file when a stage lands or a plan changes.
       start), so the reference flux needs a second request and leadtime
       differencing rather than ERA5's single sfc file. At 2.5 km a
       lower-resolution pixel sample would be the sane starting point.
-- [ ] **CARRA-2 vs ERA5 over matched DOMAINS** — the sounding-by-sounding
-      comparison is already done and is like-for-like (see README): CARRA-2
-      removes ERA5's warm-surface bias (T2m +2.95 → −0.79 K) but over-detects
-      SBIs (93.5 % vs 67.5 % observed) and overestimates strength (+2.69 K).
+- [ ] **Three-source comparison over matched DOMAINS** — the
+      sounding-by-sounding comparison is done and is like-for-like (see
+      README). Headline: ERA5 and MERRA-2 agree on the Arctic warm-surface
+      bias to within 0.14 K (+2.95 / +3.09 K) despite unrelated models and
+      grids, so it is a property of global reanalysis over sea ice rather
+      than an ERA5 quirk; CARRA-2 alone removes it (−0.79 K) but then
+      over-detects SBIs (93.5 % vs 67.5 % observed) and overestimates
+      strength (+2.69 K) where both global sources underestimate it. All
+      three overestimate depth by 315–398 m, which is vertical resolution,
+      not horizontal.
       What is still missing is a matched-domain *climatology* comparison —
       CARRA-2 sits on 85–90°N, ERA5 on 80–90°N, so the monthly means are not
       comparable. Needs the analysis-stage `--area` item below, or a CARRA-2
-      re-download at 80–90°N.
+      re-download at 80–90°N. Note ERA5 and MERRA-2 *are* mutually
+      comparable (both 80–90°N) and differ by 18 points in monthly SBI
+      frequency (61.6 % vs 43.8 %) despite near-identical surface biases —
+      worth understanding on its own, since it points at the detection
+      criterion interacting with vertical level spacing (37 vs 42 levels)
+      rather than at the thermodynamics.
       Stage 6 already runs on both (all 123 Jan-2020 soundings are at
       86.7-87.6N, inside CARRA-2's 85-90N domain), and needs one shared month
       downloaded plus a joint figure.
