@@ -127,6 +127,35 @@ def horizontal_coords(obj: xr.Dataset | xr.DataArray) -> dict:
     return coords
 
 
+def cell_spacing_km(obj: xr.Dataset | xr.DataArray) -> float:
+    """Median great-circle distance between horizontally adjacent cells [km]."""
+    lat2d, lon2d = latlon2d(obj)
+    step = great_circle_km(lat2d[:, :-1], lon2d[:, :-1],
+                           lat2d[:, 1:], lon2d[:, 1:])
+    return float(np.nanmedian(step))
+
+
+def same_grid(a: xr.Dataset, b: xr.Dataset, tol_fraction: float = 0.01) -> bool:
+    """True when two datasets share a horizontal grid to within a fraction
+    of a cell.
+
+    Exact equality is too strict for CARRA-2: the CDS encodes latitude and
+    longitude independently in each GRIB message, so the pressure-level and
+    single-level deliveries of one grid disagree in the last few decimals —
+    a couple of metres against 2500 m spacing, and up to 0.3 deg of longitude
+    beside the pole where longitude is ill-conditioned. Comparing physical
+    displacement rather than coordinate values sidesteps both.
+    """
+    if hdims(a) != hdims(b):
+        return False
+    lat_a, lon_a = latlon2d(a)
+    lat_b, lon_b = latlon2d(b)
+    if lat_a.shape != lat_b.shape:
+        return False
+    displacement = float(np.nanmax(great_circle_km(lat_a, lon_a, lat_b, lon_b)))
+    return displacement <= tol_fraction * cell_spacing_km(a)
+
+
 def grid_template(obj: xr.Dataset) -> xr.Dataset:
     """A small dataset carrying only this grid's description.
 
@@ -242,7 +271,18 @@ def projection_crs(obj: xr.Dataset | xr.DataArray):
     import cartopy.crs as ccrs
 
     a = obj[GRID_MAPPING_VAR].attrs
+    # The globe matters: x/y were computed on the file's sphere, and letting
+    # cartopy default to WGS84 instead misplaces the data by up to ~19 km at
+    # the edge of an 85-90N domain (zero at the pole). Declaring the sphere
+    # makes the CRS self-consistent with the stored coordinates — a
+    # round-trip through it reproduces the delivered latitude/longitude to
+    # 0.2 m. Cartopy still applies a proper datum transformation when drawing
+    # on WGS84-referenced axes, which is the CF-correct reading of the
+    # grid mapping this file declares.
+    radius = float(a.get("earth_radius", 6371229.0))
+    globe = ccrs.Globe(semimajor_axis=radius, semiminor_axis=radius, ellipse=None)
     return ccrs.NorthPolarStereo(
         central_longitude=float(a.get("straight_vertical_longitude_from_pole", 0.0)),
         true_scale_latitude=float(a.get("standard_parallel", 90.0)),
+        globe=globe,
     )

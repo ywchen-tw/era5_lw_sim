@@ -31,9 +31,16 @@ import xarray as xr
 #: Ratio of the gas constants for dry air and water vapour.
 EPSILON = 0.621981
 
-#: CARRA-2 is delivered on this projection; the CDS netCDF carries x/y in m.
-PROJ_CENTRAL_LON = 0.0
+# CARRA-2's grid, recovered from a delivered file rather than assumed: these
+# are the only parameters for which projecting the 2-D latitude/longitude
+# yields a *regular* mesh, and they reproduce the documented 2.5 km spacing
+# exactly (dx = dy = 2500.000 m, residual non-regularity < 0.2 m, against
+# 320 km for a straight-up-Greenwich guess). The CDS delivery carries no x/y
+# coordinates of its own, so they are reconstructed with these.
+PROJ_CENTRAL_LON = -30.0        # straight vertical longitude from the pole
 PROJ_STANDARD_PARALLEL = 90.0
+PROJ_EARTH_RADIUS = 6371229.0   # m
+PROJ_GRID_SPACING = 2500.0      # m, for the regularity check
 
 # Variables recognized in each delivery, in pipeline (ERA5-convention)
 # spelling. CARRA-2's GRIB short names already match ERA5's for these fields;
@@ -112,13 +119,34 @@ def specific_humidity_from_rh(rh_percent, t_k, p_pa, over: str = "water"):
     return EPSILON * e / (p_pa - (1.0 - EPSILON) * e)
 
 
+#: Scalar GRIB coordinates that carry no information once the level type is
+#: known (analysis step is always 0; the rest just name the level surface).
+DROP_SCALAR_COORDS = ("step", "surface", "heightAboveGround", "number",
+                      "depthBelowLandLayer", "entireAtmosphere")
+
+
 def _standardize_names(ds: xr.Dataset) -> xr.Dataset:
-    """Rename delivered coordinates and variables to pipeline spellings."""
+    """Rename delivered coordinates and variables to pipeline spellings.
+
+    Idempotent, so it can run again on an already-standardized dataset.
+
+    The CDS delivers CARRA-2 through cfgrib, which gives a ``time`` dimension
+    *and* a ``valid_time`` coordinate along it (identical for analyses, where
+    step = 0). Renaming ``time`` to ``valid_time`` would collide with that
+    existing coordinate, so the dimension is swapped onto it instead.
+    """
+    if "valid_time" in ds.coords and "time" in ds.dims:
+        ds = ds.swap_dims({"time": "valid_time"})
+        if "time" in ds.coords:
+            ds = ds.drop_vars("time")
+    taken = set(ds.dims) | set(ds.coords)
     renames = {k: v for k, v in COORD_ALIASES.items()
-               if k in ds.dims or k in ds.coords}
+               if (k in ds.dims or k in ds.coords) and v not in taken}
     renames.update({k: v for k, v in VAR_ALIASES.items()
-                    if k in ds.data_vars and k != v})
-    return ds.rename(renames) if renames else ds
+                    if k in ds.data_vars and k != v and v not in ds.data_vars})
+    ds = ds.rename(renames) if renames else ds
+    drop = [c for c in DROP_SCALAR_COORDS if c in ds.coords]
+    return ds.drop_vars(drop) if drop else ds
 
 
 def _projection_coords(ds: xr.Dataset) -> xr.Dataset:
@@ -135,12 +163,24 @@ def _projection_coords(ds: xr.Dataset) -> xr.Dataset:
 
         proj = pyproj.Proj(proj="stere", lat_0=90.0,
                            lat_ts=PROJ_STANDARD_PARALLEL,
-                           lon_0=PROJ_CENTRAL_LON, R=6371229.0)
+                           lon_0=PROJ_CENTRAL_LON, R=PROJ_EARTH_RADIUS)
         lat = ds["latitude"].transpose("y", "x").values
         lon = ds["longitude"].transpose("y", "x").values
         xx, yy = proj(lon, lat)
-        # a polar-stereographic grid is regular in projection space; take the
-        # middle row/column so a stray edge cell cannot skew the coordinates
+        # The grid must come out regular: x depending only on the column and y
+        # only on the row. If it does not, the projection constants above no
+        # longer match the delivery and the x/y written here — and every map
+        # drawn from them — would be silently wrong, so fail loudly instead.
+        spread = max(np.nanmax(np.nanstd(xx, axis=0)),
+                     np.nanmax(np.nanstd(yy, axis=1)))
+        if spread > 0.05 * PROJ_GRID_SPACING:
+            raise ValueError(
+                f"CARRA-2 grid is not regular under lat_ts="
+                f"{PROJ_STANDARD_PARALLEL}, lon_0={PROJ_CENTRAL_LON} "
+                f"(spread {spread:.1f} m vs {PROJ_GRID_SPACING:.0f} m spacing) "
+                "— the delivered projection differs from the one assumed in "
+                "reanlib/io_carra2.py")
+        # regular by the check above, so any row/column gives the coordinates
         ds = ds.assign_coords(x=("x", xx[xx.shape[0] // 2, :]),
                               y=("y", yy[:, yy.shape[1] // 2]))
     ds["x"].attrs.update(units="m", standard_name="projection_x_coordinate")
@@ -153,7 +193,7 @@ def _projection_coords(ds: xr.Dataset) -> xr.Dataset:
             "straight_vertical_longitude_from_pole": PROJ_CENTRAL_LON,
             "standard_parallel": PROJ_STANDARD_PARALLEL,
             "latitude_of_projection_origin": 90.0,
-            "earth_radius": 6371229.0,
+            "earth_radius": PROJ_EARTH_RADIUS,
         },
     )
     for name in ds.data_vars:
@@ -175,9 +215,11 @@ def normalize_carra2(ds: xr.Dataset, kind: str, cfg: dict | None = None,
       - plev files carry 'q', derived from the delivered relative humidity
       - a CF 'polar_stereographic' grid-mapping variable and x/y coordinates
 
-    ``area`` [N, W, S, E] trims the delivered bounding box to the cells whose
-    centres fall inside it — the CDS subsets in projection space, so a
-    delivery always over-covers the requested latitude band.
+    ``area`` [N, W, S, E] crops to the cells whose centres fall inside it.
+    The CDS masks rather than crops: it returns the entire 2869x2869
+    pan-Arctic mesh carrying values only inside the requested area, so this
+    discards empty canvas, never data. It happens before any arithmetic —
+    see the comment at the call site.
     """
     rh_over = (cfg or {}).get("carra2", {}).get("rh_over", "water")
     ds = _standardize_names(ds)
@@ -196,6 +238,14 @@ def normalize_carra2(ds: xr.Dataset, kind: str, cfg: dict | None = None,
     if ds["latitude"].ndim != 2:
         raise ValueError("expected 2-D latitude/longitude on the CARRA-2 "
                          f"projected grid, got {ds['latitude'].ndim}-D")
+
+    # Clip FIRST, before any arithmetic. The CDS masks rather than crops: it
+    # returns the whole 2869x2869 pan-Arctic mesh with values only inside the
+    # requested area (~2 % of cells for 85-90N). Deriving q on the full mesh
+    # would materialize ~63 GB for a 12-day chunk; on the clipped box it is
+    # ~1.5 GB. isel keeps the selection lazy, so nothing large is ever read.
+    if area is not None:
+        ds = clip_to_area(ds, area)
 
     if "pressure_level" in ds.dims:
         ds["pressure_level"] = ds["pressure_level"].astype(float)
@@ -217,8 +267,6 @@ def normalize_carra2(ds: xr.Dataset, kind: str, cfg: dict | None = None,
             ds["cc"].attrs["units"] = "1"
 
     ds = _projection_coords(ds)
-    if area is not None:
-        ds = clip_to_area(ds, area)
 
     ds.attrs = {
         "source": ("CARRA-2 (Copernicus pan-Arctic Regional Reanalysis, "

@@ -49,7 +49,7 @@ import numpy as np
 import xarray as xr
 
 from .grid import hdims as grid_hdims
-from .grid import horizontal_coords
+from .grid import horizontal_coords, same_grid
 
 RD = 287.04    # dry-air gas constant [J kg-1 K-1]
 G0 = 9.80665   # standard gravity [m s-2]
@@ -200,9 +200,16 @@ def compute_inversion_dataset(ds_plev: xr.Dataset, ds_sfc: xr.Dataset,
     if grid_hdims(ds_sfc) != horiz:
         raise ValueError(f"plev grid dims {horiz} differ from sfc "
                          f"{grid_hdims(ds_sfc)}")
-    for coord in ("latitude", "longitude"):
-        if not np.array_equal(ds_plev[coord].values, ds_sfc[coord].values):
-            raise ValueError(f"{coord} grids of plev and sfc files differ")
+    if not same_grid(ds_plev, ds_sfc):
+        raise ValueError("plev and sfc files are on different horizontal grids")
+    # Same grid, but not necessarily bit-identical coordinates: CARRA-2's two
+    # deliveries encode lat/lon separately and disagree in the last decimals.
+    # xarray aligns on coordinate *values*, so leaving them be would make every
+    # plev-minus-sfc expression (the fixed-level metrics) an empty join full of
+    # NaN, silently. Adopt one set of coordinates for both.
+    shared = {name: ds_sfc[name] for name in (*horiz, "latitude", "longitude")
+              if name in ds_sfc.coords and name in ds_plev.coords}
+    ds_plev = ds_plev.assign_coords(shared)
     common = np.intersect1d(ds_plev["valid_time"].values, ds_sfc["valid_time"].values)
     if common.size == 0:
         raise ValueError("plev and sfc files share no valid_time steps")

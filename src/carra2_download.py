@@ -156,10 +156,21 @@ def _merge_existing(out, target: Path):
         return out, "downloaded"          # unreadable: replace it
     if set(old.data_vars) != set(out.data_vars):
         return out, "replaced (variable set changed)"
+    # The horizontal grid must match exactly. If it does not — an older file
+    # written before the projection constants were corrected, say — xarray
+    # would outer-join the two coordinate sets and silently fill the result
+    # with NaN, so replace the file instead of concatenating.
+    for coord in ("x", "y"):
+        if coord in old.coords and coord in out.coords:
+            a, b = old[coord].values, out[coord].values
+            if a.shape != b.shape or not np.allclose(a, b):
+                return out, "replaced (grid changed)"
 
     old_t, _ = _split_static(old)
     new_t, static = _split_static(out)
-    combined = xr.concat([old_t, new_t], dim="valid_time")
+    # join="exact": any residual coordinate mismatch is an error, never a
+    # silently NaN-padded union
+    combined = xr.concat([old_t, new_t], dim="valid_time", join="exact")
     _, keep = np.unique(combined["valid_time"].values, return_index=True)
     combined = combined.isel(valid_time=np.sort(keep)).sortby("valid_time")
     # static vars were dropped from `combined`, so there is nothing to reconcile
@@ -175,28 +186,31 @@ def write_normalized_chunk(raw: Path, kind: str, cfg: dict, area: list[float],
     import numpy as np
     import pandas as pd
 
-    ds = open_delivery(raw)
+    from reanlib.io_carra2 import _standardize_names
+
+    ds = _standardize_names(open_delivery(raw))
+    path_fn = plev_path if kind == "plev" else sfc_path
+    stamps = pd.DatetimeIndex(ds["valid_time"].values)
+    results: dict[dt.date, str] = {}
     try:
-        whole = normalize_carra2(ds, kind, cfg, area=area).sortby("valid_time").load()
+        for date in dates:
+            idx = np.flatnonzero(stamps.date == date)
+            if idx.size == 0:
+                results[date] = "FAILED: no time steps for this day in the delivery"
+                continue
+            # one day at a time: a whole plev chunk is ~63 GB decompressed on
+            # the full CARRA-2 mesh, so it must never be materialized at once
+            day = normalize_carra2(ds.isel(valid_time=idx), kind, cfg, area=area)
+            target = path_fn(cfg, date)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            out, status = _merge_existing(day.load(), target)
+            tmp_nc = target.with_suffix(".nc.norm")
+            out.to_netcdf(tmp_nc, encoding={v: {"zlib": True, "complevel": 4}
+                                            for v in out.data_vars})
+            os.replace(tmp_nc, target)
+            results[date] = status
     finally:
         ds.close()
-
-    path_fn = plev_path if kind == "plev" else sfc_path
-    stamps = pd.DatetimeIndex(whole["valid_time"].values)
-    results: dict[dt.date, str] = {}
-    for date in dates:
-        idx = np.flatnonzero(stamps.date == date)
-        if idx.size == 0:
-            results[date] = "FAILED: no time steps for this day in the delivery"
-            continue
-        target = path_fn(cfg, date)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        out, status = _merge_existing(whole.isel(valid_time=idx), target)
-        tmp_nc = target.with_suffix(".nc.norm")
-        out.to_netcdf(tmp_nc, encoding={v: {"zlib": True, "complevel": 4}
-                                        for v in out.data_vars})
-        os.replace(tmp_nc, target)
-        results[date] = status
     return results
 
 
