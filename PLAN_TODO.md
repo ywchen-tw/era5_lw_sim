@@ -53,6 +53,21 @@ the README. Update this file when a stage lands or a plan changes.
       frequency / 6.43 K, EOF1 73.6 % / EOF2 14.4 %, MOSAiC 78.9 % agreement,
       r = +0.27, biases −2.00 K / +315 m / +2.95 K — all as documented).
 
+- [x] **Stage 6b — per-level profile comparison** (`mosaic_profiles.py`,
+      `reanlib/humidity.py`): T, q and RH at 14 levels common to all three
+      sources against the same 123 soundings, with RH recomputed from q for
+      every source *including* the observations so saturation conventions
+      cannot masquerade as moisture differences. Result: the ~+3 K
+      warm-surface bias of both global reanalyses is confined to the 2 m
+      diagnostic — at 1000 hPa ERA5 is +1.01 K and MERRA-2 already −0.51 K,
+      and above 925 hPa all three are within ±0.41 K — which is why both
+      underestimate SBI strength while CARRA-2 (cold at 2 m and 1000 hPa)
+      overestimates it. Humidity ranks the sources in the reverse order of
+      resolution (q rmse 0.07–0.09 / 0.11–0.16 / 0.15–0.21 g/kg).
+      NOTE the soundings were GTS-transmitted and assimilated, so agreement
+      aloft is not independent validation; cross-source comparison is on
+      firmer ground than absolute skill.
+
 - [x] **Stage 7c — hourly state-time test** (`statetime_test.py`,
       `lrt_sim.py prep --pixels-from`): 11Z + 13Z added for
       2020-01-01, the 12Z 500-pixel set re-simulated at 11Z. Verdict: the
@@ -101,6 +116,14 @@ the README. Update this file when a stage lands or a plan changes.
       so vertical-resolution smoothing isn't misread as state bias.
 
 ## Backlog / ideas
+
+- [ ] **Spread on the stage-6b profile figure** — the panels currently show
+      bias and rmse only, so the sounding-to-sounding scatter behind each
+      point is invisible and the reader cannot tell a consistent offset from
+      a noisy one. Add the standard deviation of the differences, most
+      naturally as a shaded ±1σ band around each bias line (σ² = rmse² −
+      bias², so it needs no new pairing pass). Worth doing before the figure
+      is used to argue that any two sources differ.
 
 - [ ] **CARRA-2 moist bias aloft** — the profile comparison (stage 6b) shows
       CARRA-2 q running +0.06…+0.08 g/kg high through 750–500 hPa, which in

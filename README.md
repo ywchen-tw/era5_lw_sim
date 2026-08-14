@@ -38,6 +38,7 @@ era5_analysis/
 │   ├── monthly_stats.py         # stage 4: monthly statistics + figures
 │   ├── profile_analysis.py      # stage 5: profile PCA, surface-T, correlations
 │   ├── mosaic_compare.py        # stage 6: reanalysis vs MOSAiC radiosondes
+│   ├── mosaic_profiles.py       # stage 6b: per-level T/q/RH vs MOSAiC, all sources
 │   ├── cams_download.py         # CAMS EGG4 CO2/CH4 profiles (for stage 7)
 │   ├── lrt_sim.py               # stage 7: libRadtran LW fluxes vs reanalysis (er3t_env!)
 │   ├── rrtmg_sim.py             # stage 7b: RRTMG-LW cross-check via climlab (era5 env)
@@ -46,7 +47,8 @@ era5_analysis/
 │   ├── mosaic_flux.py           # LW simulation at every MOSAiC-matched column
 │   ├── prefire_download.py      # PREFIRE TIRS granules + SRFs (stage 8)
 │   ├── prefire_bt.py            # stage 8: PREFIRE BT simulation + Jacobians
-│   └── reanlib/                 # shared code: config, per-source I/O, grids, science, maps, style
+│   └── reanlib/                 # shared code: config, per-source I/O, grids,
+│                                #   humidity, science, maps, style
 ├── slurm/                       # CURC job templates (stages 7/8)
 ├── data/<source>/YYYY/MM/DD/    # raw daily files: <source>_{plev,sfc}_YYYYMMDD.nc
 ├── data/mosaic/                 # MOSAiC observations (PANGAEA download)
@@ -269,6 +271,11 @@ python src/profile_analysis.py --year 2020 --month 1
 
 # 6. sounding-by-sounding comparison against MOSAiC radiosondes
 python src/mosaic_compare.py --year 2020 --month 1
+
+# 6b. level-by-level T/q/RH against the same soundings (one file per source,
+#     then a combined table + figure across every source present)
+python src/mosaic_profiles.py --year 2020 --month 1 --source era5
+python src/mosaic_profiles.py --year 2020 --month 1 --report
 ```
 
 - All stages are idempotent: existing complete files are skipped
@@ -409,6 +416,58 @@ the surface climate does not.
 Caveat worth keeping: the CARRA-2 column covers 85–90°N pack ice only.
 Nothing here compares the sources over Greenland or the ice edge, which is
 where 2.5 km would be expected to matter most.
+
+### Profile comparison (stage 6b)
+
+`mosaic_profiles.py` compares the *state* rather than the derived metrics:
+T, q and RH at 14 pressure levels common to all three sources, against the
+same soundings. Relative humidity is recomputed from q for **every** source
+including the observations (`reanlib/humidity.py`), because ERA5 publishes RH
+over a mixed phase below 0 °C while radiosondes and CARRA use water — at
+−30 °C that convention alone is worth tens of percent.
+
+**The warm-surface bias is a 2 m problem, not a boundary-layer one.** That is
+the result this stage adds, and it explains the inversion scores above:
+
+| T bias (K) | ERA5 | MERRA-2 | CARRA-2 |
+|---|---|---|---|
+| 2 m | **+2.95** | **+3.09** | −0.79 |
+| 1000 hPa | +1.01 | **−0.51** | −0.73 |
+| 950 hPa | −0.36 | −0.89 | +0.21 |
+| 925 hPa | −0.08 | −0.68 | +0.41 |
+| 850 hPa | −0.10 | −0.39 | +0.16 |
+| 500 hPa | −0.09 | +0.15 | −0.05 |
+
+One level above the surface MERRA-2 has already flipped *cold*, and above
+925 hPa all three sit within ±0.41 K. The +3 K therefore lives in the 2 m
+diagnostic and the surface coupling beneath it, not in boundary-layer
+temperature — so a surface held too warm under air that is about right gives
+an inversion too weak, exactly what both global sources show. Temperature
+rmse collapses with height for every source (2.4–2.7 K at 1000 hPa,
+0.3–0.5 K by 500 hPa): nearly all the disagreement is in the lowest 100 m.
+
+**Humidity separates the sources further than temperature**, and in the
+reverse order of horizontal resolution — q rmse 0.07–0.09 g/kg (ERA5),
+0.11–0.16 (MERRA-2), 0.15–0.21 (CARRA-2). CARRA-2 is also biased moist aloft,
+growing from +1 % RH at 875 hPa to **+36 % at 300 hPa** while the other two
+stay within ±6 %. That growth with falling temperature is the signature of a
+water-versus-ice saturation mismatch, so it was tested rather than assumed:
+reconverting CARRA-2's published humidity over ice makes the whole column too
+dry (mean |q bias| 0.055 g/kg against 0.043 for water), so `rh_over: water`
+stands and the moist bias is not a conversion artefact. A residual height
+dependence survives and is filed in PLAN_TODO.
+
+**These soundings are not independent.** MOSAiC radiosondes were transmitted
+on the GTS and assimilated, so agreement aloft partly measures how strongly
+each system was pulled toward the observations it is being scored against —
+which is why free-troposphere temperature rmse is 0.3–0.5 K. Comparisons
+*between* sources are on firmer ground than any source's absolute skill, and
+"ERA5 and MERRA-2 match the sondes on humidity, CARRA-2 does not" cannot be
+read as CARRA-2 being wrong. At 300 hPa the observed mean is 0.014 g/kg,
+where radiosonde humidity sensors have known dry biases of their own.
+
+`figures/mosaic_profiles_YYYYMM.png` plots bias and rmse against pressure for
+all three sources and all three quantities.
 
 ## January 2020 case study (current results)
 
