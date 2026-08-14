@@ -162,6 +162,14 @@ the README. Update this file when a stage lands or a plan changes.
       start), so the reference flux needs a second request and leadtime
       differencing rather than ERA5's single sfc file. At 2.5 km a
       lower-resolution pixel sample would be the sane starting point.
+      The forecast request has now been TESTED and works: `product_type:
+      forecast` + `leadtime_hour: [1, 2]` returns `str` and `strd` — ERA5's
+      own short names — dimensioned (step, y, x) with `time` the cycle start
+      (12 UTC) and `valid_time` 13:00/14:00, so an hourly flux is the
+      difference of consecutive steps. Also confirmed on an 80-90N probe:
+      CARRA-2 EXTRAPOLATES below-ground pressure levels rather than filling
+      them (244,300 of 624,693 band cells have sp < 1000 hPa and every one
+      has a finite t(1000)), so it behaves like ERA5, not MERRA-2.
 - [ ] **Three-source comparison over matched DOMAINS** — the
       sounding-by-sounding comparison is done and is like-for-like (see
       README). Headline: ERA5 and MERRA-2 agree on the Arctic warm-surface
