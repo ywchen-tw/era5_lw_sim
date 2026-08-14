@@ -102,6 +102,19 @@ the README. Update this file when a stage lands or a plan changes.
 
 ## Backlog / ideas
 
+- [ ] **CARRA-2 moist bias aloft** — the profile comparison (stage 6b) shows
+      CARRA-2 q running +0.06…+0.08 g/kg high through 750–500 hPa, which in
+      RH terms grows to +22 % at 600 hPa and +36 % at 300 hPa, while ERA5 and
+      MERRA-2 sit within ±6 %. Tested and REJECTED the obvious explanation
+      that CARRA-2's relative humidity is defined over ice: converting its
+      published RH over ice makes the whole column too dry (mean |q bias|
+      0.055 g/kg vs 0.043 for water), so `rh_over: water` stays. A residual
+      height dependence remains — water fits best near the surface, ice best
+      near 600 hPa — so a non-IFS mixed-phase ramp cannot be ruled out.
+      Worth settling against CARRA-2's own published `r` field (which the
+      ingest currently discards after deriving q) before treating the moist
+      bias as physical.
+
 - [ ] **CARRA-2 stage 7 (LW closure)** — blocked on two source gaps, both
       documented in the README: CARRA-2 publishes **no ozone** (needs a
       climatological profile) and its profile top is **50 hPa**, so the

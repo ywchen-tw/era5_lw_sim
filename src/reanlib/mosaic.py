@@ -44,9 +44,12 @@ def load_sounding_month(year: int, month: int):
             return None
     with open(path) as f:
         skip = next(i for i, line in enumerate(f) if line.startswith("*/")) + 1
+    # Event/Latitude/Longitude/RH are needed by mosaic_profiles.py; the extra
+    # columns cost a little memory but keep one cached frame serving both.
     df = pd.read_csv(path, sep="\t", skiprows=skip,
-                     usecols=["Date/Time", "Altitude [m]", "PPPP [hPa]",
-                              "TTT [°C]"])
+                     usecols=["Event", "Date/Time", "Latitude", "Longitude",
+                              "Altitude [m]", "PPPP [hPa]", "TTT [°C]",
+                              "RH [%]"])
     df["Date/Time"] = pd.to_datetime(df["Date/Time"], format="ISO8601")
     _CACHE[key] = df
     return df

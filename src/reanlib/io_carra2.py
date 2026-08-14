@@ -28,8 +28,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-#: Ratio of the gas constants for dry air and water vapour.
-EPSILON = 0.621981
+from .humidity import specific_humidity_from_rh
 
 # CARRA-2's grid, recovered from a delivered file rather than assumed: these
 # are the only parameters for which projecting the 2-D latitude/longitude
@@ -76,47 +75,6 @@ VAR_ALIASES = {
     "cc": "cc", "cloud_cover": "cc",
     "lsm": "lsm", "land_sea_mask": "lsm",
 }
-
-
-def saturation_vapour_pressure(t_k, over: str = "water"):
-    """Saturation vapour pressure [Pa] from temperature [K].
-
-    Alduchov & Eskridge (1996) improved Magnus coefficients, which stay
-    accurate to the Arctic winter temperatures this pipeline works at
-    (better than 0.4 % down to -80 C over ice).
-
-    ``over``: 'water', 'ice', or 'mixed' — the IFS-style blend that uses ice
-    below -23 C, water above 0 C, and a quadratic ramp between.
-
-    Only true ufuncs are used, so numpy arrays and xarray DataArrays both work
-    and DataArray inputs keep their dims (the caller broadcasts a level
-    coordinate against a 4-D field).
-    """
-    tc = t_k - 273.15
-    e_water = 610.94 * np.exp(17.625 * tc / (tc + 243.04))
-    e_ice = 611.21 * np.exp(22.587 * tc / (tc + 273.86))
-    if over == "water":
-        return e_water
-    if over == "ice":
-        return e_ice
-    if over == "mixed":
-        ramp = (t_k - 250.16) / (273.16 - 250.16)
-        alpha = np.minimum(np.maximum(ramp, 0.0), 1.0) ** 2
-        return alpha * e_water + (1.0 - alpha) * e_ice
-    raise ValueError(f"unknown saturation reference {over!r} "
-                     "(expected 'water', 'ice' or 'mixed')")
-
-
-def specific_humidity_from_rh(rh_percent, t_k, p_pa, over: str = "water"):
-    """Specific humidity [kg/kg] from relative humidity [%], T [K], p [Pa].
-
-    Relative humidity is taken as the vapour-pressure ratio e/e_sat (the GRIB
-    and ECMWF convention), so e = RH * e_sat and
-    q = eps*e / (p - (1 - eps)*e).
-    """
-    e = np.maximum(rh_percent, 0.0) / 100.0 * saturation_vapour_pressure(t_k, over)
-    e = np.minimum(e, 0.99 * p_pa)
-    return EPSILON * e / (p_pa - (1.0 - EPSILON) * e)
 
 
 #: Scalar GRIB coordinates that carry no information once the level type is
