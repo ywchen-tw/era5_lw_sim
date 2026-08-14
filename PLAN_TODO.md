@@ -111,9 +111,14 @@ the README. Update this file when a stage lands or a plan changes.
       start), so the reference flux needs a second request and leadtime
       differencing rather than ERA5's single sfc file. At 2.5 km a
       lower-resolution pixel sample would be the sane starting point.
-- [ ] **CARRA-2 vs ERA5 at matched resolution** — the obvious science use of
-      the new source: does a 2.5 km regional model produce systematically
-      stronger/shallower SBIs than 0.25° ERA5 over the same MOSAiC soundings?
+- [ ] **CARRA-2 vs ERA5 over matched DOMAINS** — the sounding-by-sounding
+      comparison is already done and is like-for-like (see README): CARRA-2
+      removes ERA5's warm-surface bias (T2m +2.95 → −0.79 K) but over-detects
+      SBIs (93.5 % vs 67.5 % observed) and overestimates strength (+2.69 K).
+      What is still missing is a matched-domain *climatology* comparison —
+      CARRA-2 sits on 85–90°N, ERA5 on 80–90°N, so the monthly means are not
+      comparable. Needs the analysis-stage `--area` item below, or a CARRA-2
+      re-download at 80–90°N.
       Stage 6 already runs on both (all 123 Jan-2020 soundings are at
       86.7-87.6N, inside CARRA-2's 85-90N domain), and needs one shared month
       downloaded plus a joint figure.
@@ -133,12 +138,19 @@ the README. Update this file when a stage lands or a plan changes.
       relative_humidity would pay for most of that (stages 1-6 read no other
       profile field), at the cost of re-downloading if stage 7 is ever
       ported — though that is blocked on ozone regardless.
-- [ ] **CARRA-2 first real-data validation** — the stages were verified on a
-      synthetic delivery through the real normalizer plus the unchanged
-      ERA5/MERRA-2 regressions; the first genuine CDS delivery should be
-      checked for coordinate spelling (the netCDF converter is documented as
-      experimental — GRIB is the native format) and for whether below-ground
-      pressure levels arrive as fill values or extrapolated.
+- [x] **CARRA-2 first real-data validation** — January 2020 downloaded and
+      run end to end through stages 1–6. The delivery exposed five bugs the
+      synthetic test could not (it built its grid from the same assumptions
+      the code made): the cfgrib `time`/`valid_time` collision, a guessed
+      projection (true lon_0 = −30, recovered by requiring a regular grid),
+      clipping that had to precede the q conversion or materialize 63 GB,
+      plev/sfc coordinate drift silently NaN-ing every fixed-level metric via
+      xarray alignment, and a CRS built without the earth radius. All fixed
+      and committed; ERA5/MERRA-2 regressions unchanged throughout.
+      Key delivery facts: the CDS honours `area` by MASKING a full
+      2869×2869 canvas, not cropping it (155,588 populated cells for
+      85–90°N); the netCDF converter yields `t`/`r` GRIB short names; and
+      below-ground pressure levels arrive populated, not as fill values.
 
 - [x] **MERRA-2 stage 7, clear-sky** — `lrt_sim.py`/`rrtmg_sim.py --source
       merra2`; `M2T1NXRAD` fetched as the `rad` dataset (1-h means stamped

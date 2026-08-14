@@ -350,6 +350,45 @@ related two-level stability metrics are LTS (Klein & Hartmann 1993,
 *J. Climate* **6**, 1587–1606) and EIS (Wood & Bretherton 2006, *J. Climate*
 **19**, 6425–6432).
 
+## CARRA-2 January 2020 first results
+
+Whole month, 85–90°N, 4 analyses/day. The **MOSAiC comparison is
+like-for-like with ERA5** — the same 123 soundings, the same times and
+places — so those columns can be read against each other directly. The
+monthly climatology cannot: CARRA-2 covers 85–90°N against ERA5's 80–90°N.
+
+| vs 123 MOSAiC soundings | ERA5 | CARRA-2 |
+|---|---|---|
+| median match distance | 7 km | **1 km** |
+| T2m bias | **+2.95 K** (r +0.79) | **−0.79 K** (r +0.76) |
+| SBI detection agreement | 78.9 % | 74.0 % |
+| SBI frequency (obs 67.5 %) | 64.2 % | 93.5 % |
+| SBI strength | r +0.27, bias −2.00 K | r +0.36, bias **+2.69 K** |
+| SBI depth | bias +315 m | bias +398 m |
+| T(850)−T(2 m) | r +0.60, bias −3.00 K | r +0.67, bias +1.06 K |
+| T(925)−T(1000) | r +0.80, bias −1.04 K | r +0.75, bias +1.02 K |
+
+**The two reanalyses err in opposite directions.** CARRA-2 essentially
+removes ERA5's documented Arctic warm-surface bias (+2.95 → −0.79 K) and
+improves both fixed-level correlations, and its 2.5 km grid cuts the
+collocation distance sevenfold. But it then *over*-detects surface-based
+inversions — 93.5 % of soundings against 67.5 % observed — and overestimates
+their strength (+2.69 K) and depth (+398 m), where ERA5 underestimated
+strength (−2.00 K) from a surface that was too warm. A colder surface makes
+inversions stronger and easier to detect, which is consistent with both the
+improvement and the overshoot having one origin.
+
+Monthly means over 85–90°N: SBI frequency 92.0 %, conditional strength
+9.78 K. Profile PCA gives EOF1 72.8 % and EOF2 13.9 %, within a point of
+ERA5's 73.6 % / 14.4 % over its own domain — the vertical structure
+decomposes almost identically even though the surface climate differs.
+SBI strength correlates with T2m at **r = −0.74** against ERA5's −0.20, a
+far sharper expression of the Zhang et al. (2011) anti-correlation.
+
+Caveat worth keeping: the monthly figures are 85–90°N pack ice only. Nothing
+here compares the two sources over Greenland or the ice edge, which is where
+2.5 km would be expected to matter most.
+
 ## January 2020 case study (current results)
 
 January 2020 was chosen as the study month: deep polar night with the MOSAiC
