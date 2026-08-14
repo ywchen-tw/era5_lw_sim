@@ -117,6 +117,21 @@ the README. Update this file when a stage lands or a plan changes.
 
 ## Backlog / ideas
 
+- [ ] **Collocate each level at its own balloon position** — every stage-6/6b
+      match is nearest-cell (KD-tree) and nearest-analysis-time (6-hourly
+      snap, ≤3 h); nothing is interpolated except the sounding, vertically in
+      log-p. All levels are matched to the LAUNCH position, but the balloon
+      drifts: median 0.2 km at 1000 hPa, 1.5 at 925, 2.8 at 850, 5.6 at 700,
+      10.5 at 500 and 16.5 km at 300 hPa (p90 28 km, max 43 km), reaching
+      300 hPa ~28 min after launch. So the quoted median match distances
+      (ERA5 7 km, MERRA-2 9 km, CARRA-2 1 km) hold only near the surface —
+      above ~850 hPa drift dominates grid spacing, which erodes CARRA-2's
+      resolution advantage in exactly the layers where its moist bias appears.
+      Harmless for the inversion metrics (SBI tops sit near 900-800 hPa, ≤3 km
+      drift), but it should be fixed before the upper-level humidity
+      comparison is pushed further. The level-2 files already carry per-level
+      Latitude/Longitude, so this is a per-level query rather than new data.
+
 - [ ] **Spread on the stage-6b profile figure** — the panels currently show
       bias and rmse only, so the sounding-to-sounding scatter behind each
       point is invisible and the reader cannot tell a consistent offset from

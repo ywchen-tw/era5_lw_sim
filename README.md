@@ -469,6 +469,15 @@ where radiosonde humidity sensors have known dry biases of their own.
 `figures/mosaic_profiles_YYYYMM.png` plots bias and rmse against pressure for
 all three sources and all three quantities.
 
+**Collocation is nearest-neighbour**, not interpolated: the nearest grid cell
+(KD-tree on 3-D unit vectors, so it stays correct at the pole) and the nearest
+6-hourly analysis within 3 h. Only the sounding is interpolated, vertically in
+log-p onto each model's own levels. Every level is matched to the balloon's
+*launch* position, and the balloon drifts — median 1.5 km by 925 hPa, 5.6 km
+by 700 hPa and 16.5 km by 300 hPa (~28 min after launch). The quoted match
+distances therefore describe the surface; above ~850 hPa the collocation error
+is set by drift rather than grid spacing, which is on the backlog.
+
 ## January 2020 case study (current results)
 
 January 2020 was chosen as the study month: deep polar night with the MOSAiC
