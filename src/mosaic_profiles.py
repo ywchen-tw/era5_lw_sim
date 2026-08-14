@@ -259,7 +259,11 @@ def fig_report(per_source: dict[str, xr.Dataset], year: int, month: int,
             panel_label(ax, "abcdef"[row * 3 + col], x=-0.02, y=1.04)
             if row == 0:
                 ax.set_title(long, fontsize=11)
-    axes[0, 0].legend(frameon=False, fontsize=9, loc="lower left")
+    # figure-level legend below every panel: inside panel (a) it sat directly
+    # on the 950-1000 hPa lines, which is where the largest biases are
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="outside lower center", ncol=len(labels),
+               frameon=False, fontsize=10)
     fig.suptitle(f"Reanalysis vs MOSAiC radiosondes, {calendar.month_name[month]} "
                  f"{year} — profile bias (top) and rmse (bottom)", y=1.02)
     path = outdir / f"mosaic_profiles_{year:04d}{month:02d}.png"
