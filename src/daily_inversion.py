@@ -103,6 +103,21 @@ def main(argv: list[str] | None = None) -> int:
             ds_sfc = ds_sfc.sel(valid_time=keep, method=None)
 
         out = compute_inversion_dataset(ds_plev, ds_sfc, cfg)
+        # surface-type / sky classes for the stratified statistics, when the
+        # source's classification inputs have been downloaded (sic/lsm/tcc in
+        # the sfc file, or MERRA-2's ocn/const/rad files); absence is fine —
+        # monthly_stats simply has nothing to stratify then
+        try:
+            from reanlib.classes import class_dataset
+            from reanlib.grid import hdims, horizontal_coords
+
+            dims = ("valid_time",) + hdims(out)
+            coords = {"valid_time": out["valid_time"],
+                      **horizontal_coords(out)}
+            out = out.merge(class_dataset(cfg, date, out["valid_time"].values,
+                                          dims, coords))
+        except (KeyError, FileNotFoundError) as exc:
+            print(f"  (no surface/sky classes: {exc})")
         out.attrs["source_files"] = (f"{plev_path(cfg, date).name}, "
                                      f"{sfc_path(cfg, date).name}")
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -36,6 +36,7 @@ import xarray as xr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
+from reanlib.classes import SKY_LABELS, SURFACE_LABELS
 from reanlib.config import (SOURCES, figures_dir, inversion_path, load_config,
                             monthly_path, source_label)
 from reanlib.grid import (GRID_MAPPING_VAR, area_tag, area_weights, box_mask,
@@ -66,6 +67,15 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
     ts_time, ts_found, ts_cond, ts_uncond = [], [], [], []
     template = w2d = valid = None
     n_time = 0
+    # stratified (sky x surface class) accumulators over cell-times, flat
+    # index ky*NSURF+sc; filled only when the daily files carry the classes
+    NSKY, NSURF = len(SKY_LABELS), len(SURFACE_LABELS)
+    NCAT = NSKY * NSURF
+    strat = {k: np.zeros(NCAT) for k in
+             ("w", "n", "found_w", "cond_w", "cond_wsum", "uncond_w",
+              "depth_w", "depth_wsum", "dt850_w", "dt850_wsum", "dt850s_w",
+              "dt850s_wsum", "dt925_w", "dt925_wsum")}
+    any_classes = False
 
     for path in files:
         ds = open_era5(path)
@@ -93,6 +103,15 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
         strength = ds["sbi_strength"].values.astype(float)
         depth_z = ds["sbi_depth_z"].values.astype(float)
         n_time += found.shape[0]
+        classes = None
+        if "surface_class" in ds and "sky_class" in ds:
+            any_classes = True
+            classes = (ds["surface_class"].values.astype(int),
+                       ds["sky_class"].values.astype(int))
+            dt_steps = {k: (ds[v].values.astype(float) if v in ds else None)
+                        for k, v in (("dt850", "dt_850_2m"),
+                                     ("dt850s", "dt_850_skt"),
+                                     ("dt925", "dt_925_1000"))}
 
         sums["found"] += found.sum(axis=0)
         sums["strength_found"] += np.nansum(strength, axis=0)
@@ -122,6 +141,39 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
             hist_sd += np.histogram2d(s[ok2], depth_z[it][ok2],
                                       [STRENGTH_BINS, DEPTH_BINS],
                                       weights=w2d[ok2])[0]
+
+            if classes is not None:
+                sc, ky = classes[0][it], classes[1][it]
+                vc = (sc >= 0) & (ky >= 0) & (w2d > 0)
+                idx = ky[vc] * NSURF + sc[vc]
+                wv, fv, sv = w2d[vc], f[vc], s[vc]
+                dv = depth_z[it][vc]
+
+                def bag(key, weights, m=None):
+                    if m is None:
+                        strat[key] += np.bincount(idx, weights=weights,
+                                                  minlength=NCAT)
+                    else:
+                        strat[key] += np.bincount(idx[m], weights=weights[m],
+                                                  minlength=NCAT)
+                bag("w", wv)
+                strat["n"] += np.bincount(idx, minlength=NCAT)
+                bag("found_w", wv * fv)
+                mc = fv & np.isfinite(sv)
+                bag("cond_w", wv * np.nan_to_num(sv), mc)
+                bag("cond_wsum", wv, mc)
+                bag("uncond_w", wv * np.nan_to_num(sv))
+                md = mc & np.isfinite(dv)
+                bag("depth_w", wv * np.nan_to_num(dv), md)
+                bag("depth_wsum", wv, md)
+                for key in ("dt850", "dt850s", "dt925"):
+                    vals = dt_steps[key]
+                    if vals is None:
+                        continue
+                    x = vals[it][vc]
+                    mx = np.isfinite(x)
+                    bag(key + "_w", wv * np.nan_to_num(x), mx)
+                    bag(key + "_wsum", wv, mx)
         expver = ds.attrs.get("expver_plev", "unknown")
         ds.close()
 
@@ -167,6 +219,30 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
             "time": np.array(ts_time),
         },
     )
+    if any_classes:
+        def ratio(num: str, den: str) -> np.ndarray:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                r = np.where(strat[den] > 0, strat[num] / strat[den], np.nan)
+            return r.reshape(NSKY, NSURF)
+
+        cdims = ("sky_class", "surface_class")
+        out = out.assign_coords(sky_class=list(SKY_LABELS),
+                                surface_class=list(SURFACE_LABELS))
+        out["strat_weight"] = (cdims, strat["w"].reshape(NSKY, NSURF))
+        out["strat_n"] = (cdims, strat["n"].reshape(NSKY, NSURF).astype(np.int64))
+        out["strat_sbi_frequency"] = (cdims, ratio("found_w", "w"))
+        out["strat_strength_cond"] = (cdims, ratio("cond_w", "cond_wsum"))
+        out["strat_strength_uncond"] = (cdims, ratio("uncond_w", "w"))
+        out["strat_depth_z"] = (cdims, ratio("depth_w", "depth_wsum"))
+        out["strat_dt_850_2m"] = (cdims, ratio("dt850_w", "dt850_wsum"))
+        out["strat_dt_850_skt"] = (cdims, ratio("dt850s_w", "dt850s_wsum"))
+        out["strat_dt_925_1000"] = (cdims, ratio("dt925_w", "dt925_wsum"))
+        out.attrs["stratification"] = (
+            "strat_* are area-weighted statistics POOLED OVER CELL-TIMES per "
+            "(sky_class, surface_class); classes come from the daily files "
+            "(reanlib/classes.py thresholds), which classify each analysis "
+            "instant separately — the ice edge and clouds move")
+
     if GRID_MAPPING_VAR in template.variables:
         out[GRID_MAPPING_VAR] = template[GRID_MAPPING_VAR]
     # the (possibly area-restricted) mask, so readers and area_weights() on
@@ -195,6 +271,28 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
     if hours is not None:
         out.attrs["analysis_hours"] = [int(h) for h in hours]
     return out
+
+
+def strat_table(out: xr.Dataset) -> str:
+    """Readable (sky x surface) table of the stratified statistics."""
+    lines = ["  stratified statistics (pooled cell-times; freq / cond strength / share of domain-time):"]
+    total_w = float(out["strat_weight"].sum())
+    head = "           " + "".join(f"{s:>22}" for s in out["surface_class"].values)
+    lines.append(head)
+    for ki, sky in enumerate(out["sky_class"].values):
+        row = f"  {sky:>8} "
+        for si in range(out.sizes["surface_class"]):
+            n = int(out["strat_n"][ki, si])
+            if n == 0:
+                row += f"{'—':>22}"
+                continue
+            fq = float(out["strat_sbi_frequency"][ki, si])
+            st = float(out["strat_strength_cond"][ki, si])
+            sh = float(out["strat_weight"][ki, si]) / total_w
+            st_s = f"{st:.1f}K" if np.isfinite(st) else "—"
+            row += f"{fq:>7.1%}/{st_s}/{sh:<6.1%}"
+        lines.append(row)
+    return "\n".join(lines)
 
 
 def fig_maps(out: xr.Dataset, year: int, month: int, outdir: Path,
@@ -367,6 +465,8 @@ def main(argv: list[str] | None = None) -> int:
     cond = out["sbi_strength_cond"].values
     print(f"  domain mean SBI frequency      : {weighted_mean(freq, w):.1%}")
     print(f"  domain mean conditional strength: {weighted_mean(cond, w):.2f} K")
+    if "strat_sbi_frequency" in out:
+        print(strat_table(out))
 
     if not args.no_figures:
         outdir = figures_dir(cfg)
