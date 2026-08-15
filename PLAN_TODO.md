@@ -174,36 +174,40 @@ the README. Update this file when a stage lands or a plan changes.
       CARRA-2 EXTRAPOLATES below-ground pressure levels rather than filling
       them (244,300 of 624,693 band cells have sp < 1000 hPa and every one
       has a finite t(1000)), so it behaves like ERA5, not MERRA-2.
-- [ ] **Three-source comparison over matched DOMAINS** — the
-      sounding-by-sounding comparison is done and is like-for-like (see
-      README). Headline: ERA5 and MERRA-2 agree on the Arctic warm-surface
-      bias to within 0.14 K (+2.95 / +3.09 K) despite unrelated models and
-      grids, so it is a property of global reanalysis over sea ice rather
-      than an ERA5 quirk; CARRA-2 alone removes it (−0.79 K) but then
-      over-detects SBIs (93.5 % vs 67.5 % observed) and overestimates
-      strength (+2.69 K) where both global sources underestimate it. All
-      three overestimate depth by 315–398 m, which is vertical resolution,
-      not horizontal.
-      What is still missing is a matched-domain *climatology* comparison —
-      CARRA-2 sits on 85–90°N, ERA5 on 80–90°N, so the monthly means are not
-      comparable. Needs the analysis-stage `--area` item below, or a CARRA-2
-      re-download at 80–90°N. Note ERA5 and MERRA-2 *are* mutually
-      comparable (both 80–90°N) and differ by 18 points in monthly SBI
-      frequency (61.6 % vs 43.8 %) despite near-identical surface biases —
-      worth understanding on its own, since it points at the detection
-      criterion interacting with vertical level spacing (37 vs 42 levels)
-      rather than at the thermodynamics.
-      Stage 6 already runs on both (all 123 Jan-2020 soundings are at
-      86.7-87.6N, inside CARRA-2's 85-90N domain), and needs one shared month
-      downloaded plus a joint figure.
-- [ ] **Analysis-stage `--area` for cross-source domain means** — CARRA-2 is
-      downloaded on 85-90N while ERA5/MERRA-2 sit on 80-90N, so their
-      domain-mean statistics are NOT comparable as they stand. The stages
-      have no area filter (only the downloaders do), so a like-for-like
-      climatology comparison needs either an analysis-time area mask or an
-      ERA5 subset re-run. Weight arrays already exist (`grid.area_weights`),
-      so this is mostly a config knob plus a mask in `monthly_stats` /
-      `profile_analysis`.
+- [x] **Three-source comparison over matched DOMAINS** — the
+      sounding-by-sounding comparison was already like-for-like; the
+      matched-domain *climatology* now exists too, via `monthly_stats.py
+      --area 90 -180 85 180 --hours 0 6 12 18` (see README tables). On
+      identical 85-90N cells and hours: SBI frequency 60.7 / 50.2 / 92.0 %
+      (ERA5 / MERRA-2 / CARRA-2), conditional strength 6.22 / 6.04 / 9.78 K,
+      T850-T2m +3.81 / +2.47 / +7.89 K — CARRA-2's stronger-inversion
+      character survives domain matching intact, consistent with the
+      sounding result (over-detects, overestimates) while both global
+      sources underestimate. The CARRA-2 run under `--area` reproduces its
+      full-domain numbers exactly (mask identity check). NOTE the raw
+      retained chunks were verified 85-90N-masked (0 finite cells below
+      85N), so extending CARRA-2 southward still needs a re-download.
+- [ ] **ERA5-MERRA-2 SBI detection gap is a latitude story** — on their
+      shared 80-90N domain they differ by 17.8 points in SBI frequency
+      (61.6 vs 43.8 %) despite near-identical surface biases. Band-split
+      shows ERA5 nearly flat with latitude (61.8 % at 80-85N, 60.7 % at
+      85-90N) while MERRA-2 climbs poleward (41.2 % → 50.2 %): the
+      disagreement is 20.6 points in the outer band — which contains the
+      Atlantic-sector ice edge — and half that over the central pack. So the
+      candidate explanations are the detection criterion interacting with
+      vertical level spacing (37 vs 42 levels) AND the surface state near
+      open water / thinner ice; a map of the frequency *difference* field
+      would separate sea-ice-margin structure from uniform criterion effects.
+- [x] **Analysis-stage `--area` for cross-source domain means** —
+      `monthly_stats.py --area N W S E` (CDS order) masks the statistics to
+      a sub-box at analysis time via the new `grid.box_mask` /
+      `grid.area_tag`; outputs are tagged (`*_85-90N.nc`, figures likewise)
+      so full-domain files are never overwritten, and the restricted mask is
+      stored as the file's own `domain_mask` so downstream readers reproduce
+      the same domain. A `--hours` filter landed with it, which also defuses
+      the stage-7c footgun (extra 11Z/13Z hours in a daily file skewing a
+      re-aggregation). `profile_analysis` (PCA) does not have the knob yet —
+      add it there if a matched-domain EOF comparison is ever needed.
 - [ ] **Widen CARRA-2 to 80-90N if the spatial story matters** — the current
       85-90N domain is all pack ice and drops N Greenland / Ellesmere /
       Svalbard / Franz Josef Land / Severnaya Zemlya, i.e. exactly the

@@ -265,6 +265,10 @@ python src/plot_maps.py --year 2020 --month 1 --day 1 --hour 12
 
 # 4. monthly aggregation: stats netCDF + map/distribution/time-series figures
 python src/monthly_stats.py --year 2020 --month 1
+#    matched-domain variant (e.g. ERA5/MERRA-2 restricted to CARRA-2's band;
+#    outputs tagged _85-90N, full-domain files untouched; --hours guards
+#    against extra test hours in a daily file, e.g. stage 7c's 11Z/13Z)
+python src/monthly_stats.py --year 2020 --month 1 --area 90 -180 85 180 --hours 0 6 12 18
 
 # 5. profile PCA, surface-T statistics, strength correlations (maps + figures)
 python src/profile_analysis.py --year 2020 --month 1
@@ -397,8 +401,8 @@ All three overestimate SBI depth by 315–398 m, which no amount of horizontal
 resolution fixes: it is set by pressure-level vertical spacing against 5 m
 radiosonde profiles.
 
-Monthly climatology — **comparable only between ERA5 and MERRA-2**, both on
-80–90°N, while CARRA-2 sits on 85–90°N:
+Monthly climatology on each source's own download domain (ERA5 and MERRA-2
+80–90°N, CARRA-2 85–90°N):
 
 | 80–90°N unless noted | ERA5 | MERRA-2 | CARRA-2 (85–90°N) |
 |---|---|---|---|
@@ -407,11 +411,31 @@ Monthly climatology — **comparable only between ERA5 and MERRA-2**, both on
 | EOF1 / EOF2 | 73.6 / 14.4 % | 66.4 / 16.8 % | 72.8 / 13.9 % |
 | r(SBI strength, T2m) | −0.20 | −0.29 | −0.74 |
 
-ERA5 and MERRA-2 differ by 18 points in SBI frequency on identical domains —
-a criterion-sensitivity result in its own right, given how similar their
-surface biases are. The profile PCA is stable across all three (EOF1
-66–74 %), so the vertical structure decomposes almost identically even where
-the surface climate does not.
+For a **matched-domain** comparison, `monthly_stats.py --area 90 -180 85 180
+--hours 0 6 12 18` restricts ERA5 and MERRA-2 to CARRA-2's 85–90°N band at
+analysis time (outputs get an `_85-90N` tag so the full-domain files are
+untouched; the CARRA-2 run reproduces its full-domain numbers exactly, which
+checks the mask):
+
+| 85–90°N, 00/06/12/18 UTC | ERA5 | MERRA-2 | CARRA-2 |
+|---|---|---|---|
+| SBI frequency | 60.7 % | 50.2 % | 92.0 % |
+| conditional strength | 6.22 K | 6.04 K | 9.78 K |
+| unconditional strength | 3.90 K | 3.13 K | 9.04 K |
+| SBI depth | 693 m | 658 m | 820 m |
+| T(850) − T(2 m) | +3.81 K | +2.47 K | +7.89 K |
+
+CARRA-2's stronger-inversion character survives the domain matching intact:
++31 points of SBI frequency and +3.6 K of conditional strength over ERA5 on
+identical cells and hours, consistent with the sounding comparison (CARRA-2
+over-detects and overestimates where both global sources underestimate).
+The ERA5–MERRA-2 frequency gap is a latitude story: ERA5 is nearly flat
+(61.8 % over 80–85°N, 60.7 % over 85–90°N) while MERRA-2 climbs toward the
+pole (41.2 % → 50.2 %), so their disagreement is 20.6 points in the outer
+band — which contains the Atlantic-sector ice edge — and half that over the
+central pack. The profile PCA is stable across all three (EOF1 66–74 %), so
+the vertical structure decomposes almost identically even where the surface
+climate does not.
 
 Caveat worth keeping: the CARRA-2 column covers 85–90°N pack ice only.
 Nothing here compares the sources over Greenland or the ice edge, which is
@@ -610,7 +634,8 @@ Pixels that are no longer cloud-free at the earlier hour are excluded from
 the headline statistics (their accumulation contains cloudy radiation) and
 reported separately. Note the extra downloaded hours become part of the
 daily netCDFs — harmless for the idempotent stages, but rerunning
-`monthly_stats.py --force` afterwards would weight that day's extra hours.
+`monthly_stats.py --overwrite` afterwards would weight that day's extra
+hours; pass `--hours 0 6 12 18` to any re-aggregation to exclude them.
 
 Cost: ~1.4 s per clear pixel and ~4 s per cloudy pixel serially on the local
 Mac (reptran coarse, 4 streams); jobs parallelize across `--workers`.

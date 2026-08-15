@@ -38,7 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
 from reanlib.config import (SOURCES, figures_dir, inversion_path, load_config,
                             monthly_path, source_label)
-from reanlib.grid import GRID_MAPPING_VAR, area_weights, domain_mask, grid_template
+from reanlib.grid import (GRID_MAPPING_VAR, area_tag, area_weights, box_mask,
+                          domain_mask, grid_template)
 from reanlib.grid import hdims as grid_hdims
 from reanlib.grid import horizontal_coords, weighted_mean
 from reanlib.io_era5 import open_era5
@@ -49,8 +50,16 @@ STRENGTH_BINS = np.arange(0.0, 25.5, 0.5)    # K
 DEPTH_BINS = np.arange(0.0, 2050.0, 50.0)    # m
 
 
-def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
-    """Stream the daily files, accumulating monthly statistics."""
+def aggregate(files: list[Path], label: str = "ERA5", area=None,
+              hours: list[int] | None = None) -> xr.Dataset:
+    """Stream the daily files, accumulating monthly statistics.
+
+    ``area`` ([N, W, S, E]) restricts the statistics to a sub-box of the
+    downloaded domain, for matched-domain comparisons across sources
+    downloaded on different areas. ``hours`` keeps only those analysis hours,
+    so extra hours added to one day's files (e.g. the stage-7c 11Z/13Z test
+    downloads) cannot skew a re-aggregation.
+    """
     sums: dict[str, np.ndarray] = {}
     hist_strength = np.zeros(STRENGTH_BINS.size - 1)
     hist_sd = np.zeros((STRENGTH_BINS.size - 1, DEPTH_BINS.size - 1))
@@ -60,12 +69,19 @@ def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
 
     for path in files:
         ds = open_era5(path)
+        if hours is not None:
+            keep = np.isin(ds["valid_time"].dt.hour.values, hours)
+            ds = ds.isel(valid_time=np.flatnonzero(keep))
         if template is None:
             # keep the grid description of the first file: coordinates, the CF
             # grid mapping (CARRA-2) and the domain mask all come from it
             template = grid_template(ds)
             w2d = area_weights(ds)
             valid = domain_mask(ds)
+            if area is not None:
+                box = box_mask(ds, area)
+                valid &= box
+                w2d = np.where(box, w2d, 0.0)
             shape = w2d.shape
             for key in ("found", "strength_found", "depth_p", "depth_z", "top_p",
                         "strength_uncond", "dt850", "dt925"):
@@ -146,9 +162,11 @@ def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
             "time": np.array(ts_time),
         },
     )
-    for name in (GRID_MAPPING_VAR, "domain_mask"):
-        if name in template.variables:
-            out[name] = template[name]
+    if GRID_MAPPING_VAR in template.variables:
+        out[GRID_MAPPING_VAR] = template[GRID_MAPPING_VAR]
+    # the (possibly area-restricted) mask, so readers and area_weights() on
+    # this file reproduce the same domain without knowing the CLI arguments
+    out["domain_mask"] = (hdims, valid)
     units = {"sbi_frequency": "1", "sbi_strength_cond": "K", "sbi_strength_uncond": "K",
              "sbi_depth_p_mean": "hPa", "sbi_depth_z_mean": "m", "sbi_top_p_mean": "hPa",
              "dt_850_2m_mean": "K", "dt_925_1000_mean": "K",
@@ -166,10 +184,15 @@ def aggregate(files: list[Path], label: str = "ERA5") -> xr.Dataset:
                  "Zhang et al. 2011); *_uncond counts not-found as 0 K"),
         "expver_last_file": expver,
     }
+    if area is not None:
+        out.attrs["analysis_area"] = [float(v) for v in area]
+    if hours is not None:
+        out.attrs["analysis_hours"] = [int(h) for h in hours]
     return out
 
 
-def fig_maps(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
+def fig_maps(out: xr.Dataset, year: int, month: int, outdir: Path,
+             tag: str = "") -> Path:
     import cartopy.crs as ccrs
 
     gkw = grid_kwargs(out)
@@ -192,13 +215,14 @@ def fig_maps(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
     fig.suptitle(f"{out.attrs.get('source_label', 'ERA5')} monthly temperature-inversion statistics — "
                  f"{calendar.month_name[month]} {year} — gray: no data / below ground",
                  y=0.99)
-    path = outdir / f"monthly_maps_{year:04d}{month:02d}.png"
+    path = outdir / f"monthly_maps_{year:04d}{month:02d}{tag}.png"
     fig.savefig(path)
     plt.close(fig)
     return path
 
 
-def fig_distributions(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
+def fig_distributions(out: xr.Dataset, year: int, month: int, outdir: Path,
+                      tag: str = "") -> Path:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.6, 4.4), layout="constrained")
 
     s_bin = out["strength_bin"].values
@@ -231,13 +255,14 @@ def fig_distributions(out: xr.Dataset, year: int, month: int, outdir: Path) -> P
     panel_label(ax2, "b", x=-0.16, y=1.06)
 
     fig.suptitle(f"SBI strength distributions — {calendar.month_name[month]} {year}")
-    path = outdir / f"monthly_distributions_{year:04d}{month:02d}.png"
+    path = outdir / f"monthly_distributions_{year:04d}{month:02d}{tag}.png"
     fig.savefig(path)
     plt.close(fig)
     return path
 
 
-def fig_timeseries(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path:
+def fig_timeseries(out: xr.Dataset, year: int, month: int, outdir: Path,
+                   tag: str = "") -> Path:
     t = out["time"].values
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9.0, 5.6), sharex=True,
                                    layout="constrained")
@@ -262,7 +287,7 @@ def fig_timeseries(out: xr.Dataset, year: int, month: int, outdir: Path) -> Path
             ax.spines[side].set_visible(False)
     fig.suptitle(f"Domain-mean (area-weighted) inversion metrics — "
                  f"{calendar.month_name[month]} {year}")
-    path = outdir / f"monthly_timeseries_{year:04d}{month:02d}.png"
+    path = outdir / f"monthly_timeseries_{year:04d}{month:02d}{tag}.png"
     fig.savefig(path)
     plt.close(fig)
     return path
@@ -278,6 +303,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="aggregate whatever daily files exist")
     parser.add_argument("--source", choices=list(SOURCES), default=None,
                         help="data source (default from config.yaml)")
+    parser.add_argument("--area", nargs=4, type=float, default=None,
+                        metavar=("N", "W", "S", "E"),
+                        help="restrict statistics to this lat/lon box (CDS "
+                             "order); outputs get an area tag so the "
+                             "full-domain files are never overwritten")
+    parser.add_argument("--hours", nargs="+", type=int, default=None,
+                        help="keep only these analysis hours (e.g. 0 6 12 18; "
+                             "guards against extra test hours in a daily file)")
     parser.add_argument("--config", default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no-figures", action="store_true")
@@ -304,12 +337,16 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print(f"note: skipping {len(missing)} missing day(s), using {len(files)}")
 
+    tag = f"_{area_tag(args.area)}" if args.area else ""
     target = monthly_path(cfg, args.year, args.month)
+    if tag:
+        target = target.with_name(target.stem + tag + target.suffix)
     if target.exists() and not args.overwrite:
         print(f"{target} exists, loading it (use --overwrite to recompute)")
         out = open_era5(target)
     else:
-        out = aggregate(files, source_label(cfg))
+        out = aggregate(files, source_label(cfg), area=args.area,
+                        hours=args.hours)
         target.parent.mkdir(parents=True, exist_ok=True)
         out.to_netcdf(target, encoding={v: {"zlib": True, "complevel": 4}
                                         for v in out.data_vars})
@@ -325,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         outdir = figures_dir(cfg)
         outdir.mkdir(parents=True, exist_ok=True)
         for fn in (fig_maps, fig_distributions, fig_timeseries):
-            print(f"wrote {fn(out, args.year, args.month, outdir)}")
+            print(f"wrote {fn(out, args.year, args.month, outdir, tag)}")
     return 0
 
 

@@ -81,6 +81,33 @@ def domain_mask(obj: xr.Dataset | xr.DataArray) -> np.ndarray:
     return np.ones(hshape(obj), dtype=bool)
 
 
+def box_mask(obj: xr.Dataset | xr.DataArray, area) -> np.ndarray:
+    """Boolean 2-D mask of the cells inside a CDS-style ``[N, W, S, E]`` box.
+
+    Works on either grid family, since it tests the (2-D) latitude/longitude
+    of every cell. The longitude test is wrap-safe: E and W are compared as an
+    eastward span from W, and a zero span (e.g. -180..180) means the full
+    circle. Combine with ``domain_mask``/``area_weights`` for analysis-time
+    subsetting to a domain smaller than the one downloaded.
+    """
+    lat_n, lon_w, lat_s, lon_e = (float(v) for v in area)
+    lat2d, lon2d = latlon2d(obj)
+    inside = (lat2d >= lat_s) & (lat2d <= lat_n)
+    span = (lon_e - lon_w) % 360.0
+    if span > 0.0:
+        inside &= (lon2d - lon_w) % 360.0 <= span
+    return inside
+
+
+def area_tag(area) -> str:
+    """Short filename tag for an analysis area, e.g. ``85-90N``."""
+    lat_n, lon_w, lat_s, lon_e = (float(v) for v in area)
+    tag = f"{lat_s:g}-{lat_n:g}N"
+    if (lon_e - lon_w) % 360.0 != 0.0:
+        tag += f"_{lon_w:g}-{lon_e:g}E"
+    return tag
+
+
 def area_weights(obj: xr.Dataset | xr.DataArray) -> np.ndarray:
     """Relative spherical cell area over the horizontal grid, as a 2-D array.
 
