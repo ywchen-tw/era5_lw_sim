@@ -433,13 +433,14 @@ the result this stage adds, and it explains the inversion scores above:
 |---|---|---|---|
 | 2 m | **+2.95** | **+3.09** | −0.79 |
 | 1000 hPa | +1.01 | **−0.51** | −0.73 |
-| 950 hPa | −0.36 | −0.89 | +0.21 |
-| 925 hPa | −0.08 | −0.68 | +0.41 |
-| 850 hPa | −0.10 | −0.39 | +0.16 |
-| 500 hPa | −0.09 | +0.15 | −0.05 |
+| 950 hPa | −0.37 | −0.89 | +0.21 |
+| 925 hPa | −0.07 | −0.68 | +0.41 |
+| 850 hPa | −0.10 | −0.38 | +0.15 |
+| 500 hPa | −0.10 | +0.13 | −0.07 |
 
-One level above the surface MERRA-2 has already flipped *cold*, and above
-925 hPa all three sit within ±0.41 K. The +3 K therefore lives in the 2 m
+One level above the surface MERRA-2 has already flipped *cold* — it stays
+0.4–0.9 K cold from 950 to 800 hPa — and from 850 hPa upward all three sit
+within ±0.4 K. The +3 K therefore lives in the 2 m
 diagnostic and the surface coupling beneath it, not in boundary-layer
 temperature — so a surface held too warm under air that is about right gives
 an inversion too weak, exactly what both global sources show. Temperature
@@ -447,15 +448,17 @@ rmse collapses with height for every source (2.4–2.7 K at 1000 hPa,
 0.3–0.5 K by 500 hPa): nearly all the disagreement is in the lowest 100 m.
 
 **Humidity separates the sources further than temperature**, and in the
-reverse order of horizontal resolution — q rmse 0.07–0.09 g/kg (ERA5),
-0.11–0.16 (MERRA-2), 0.15–0.21 (CARRA-2). CARRA-2 is also biased moist aloft,
-growing from +1 % RH at 875 hPa to **+36 % at 300 hPa** while the other two
-stay within ±6 %. That growth with falling temperature is the signature of a
-water-versus-ice saturation mismatch, so it was tested rather than assumed:
-reconverting CARRA-2's published humidity over ice makes the whole column too
-dry (mean |q bias| 0.055 g/kg against 0.043 for water), so `rh_over: water`
-stands and the moist bias is not a conversion artefact. A residual height
-dependence survives and is filed in PLAN_TODO.
+reverse order of horizontal resolution — q rmse over 1000–700 hPa is
+0.07–0.10 g/kg (ERA5), 0.09–0.16 (MERRA-2), 0.12–0.21 (CARRA-2). CARRA-2 is
+also biased moist aloft, growing from +1 % RH at 875 hPa to **+37 % at
+300 hPa** while the other two stay within ±6 %. That growth with falling
+temperature is the signature of a water-versus-ice saturation mismatch, so it
+was tested rather than assumed: reconverting CARRA-2's published humidity over
+ice makes the whole column too dry (mean |q bias| 0.055 g/kg against 0.043 for
+water), so `rh_over: water` stands and the moist bias is not a conversion
+artefact. Nor is it a collocation artefact: matching each level at the
+balloon's own drifted position (below) leaves it essentially unchanged. A
+residual height dependence survives and is filed in PLAN_TODO.
 
 **These soundings are not independent.** MOSAiC radiosondes were transmitted
 on the GTS and assimilated, so agreement aloft partly measures how strongly
@@ -466,17 +469,26 @@ which is why free-troposphere temperature rmse is 0.3–0.5 K. Comparisons
 read as CARRA-2 being wrong. At 300 hPa the observed mean is 0.014 g/kg,
 where radiosonde humidity sensors have known dry biases of their own.
 
-`figures/mosaic_profiles_YYYYMM.png` plots bias and rmse against pressure for
-all three sources and all three quantities.
+`figures/mosaic_profiles_YYYYMM.png` plots bias (with a shaded ±1σ band of
+the sounding-to-sounding differences, so a consistent offset is
+distinguishable from a noisy one) and rmse against pressure for all three
+sources and all three quantities.
 
 **Collocation is nearest-neighbour**, not interpolated: the nearest grid cell
 (KD-tree on 3-D unit vectors, so it stays correct at the pole) and the nearest
 6-hourly analysis within 3 h. Only the sounding is interpolated, vertically in
-log-p onto each model's own levels. Every level is matched to the balloon's
-*launch* position, and the balloon drifts — median 1.5 km by 925 hPa, 5.6 km
-by 700 hPa and 16.5 km by 300 hPa (~28 min after launch). The quoted match
-distances therefore describe the surface; above ~850 hPa the collocation error
-is set by drift rather than grid spacing, which is on the backlog.
+log-p onto each model's own levels. Each level is matched at the **balloon's
+own drifted position** (the level-2 files carry per-sample lat/lon,
+interpolated on unit vectors in log-p), because drift — median 1.5 km by
+925 hPa, 5.6 km by 700 hPa, 16.5 km by 300 hPa — exceeds every grid spacing
+aloft. With that, match distance is bounded by half a cell at every level
+(median 0.9–1.0 km CARRA-2, 7–9 km ERA5, 9–13 km MERRA-2). One analysis time
+is used per sounding: the balloon reaches 300 hPa ~28 min after launch, small
+against the 6 h cadence. Reassuringly, per-level collocation changed no bias
+or rmse by more than 0.04 K / 0.01 g/kg / 0.8 % RH — with the change mostly a
+small rmse *reduction* aloft, the expected sign — so the free troposphere is
+smooth enough at these scales that launch-position matching was adequate, and
+CARRA-2's moist bias aloft survives it unchanged.
 
 ## January 2020 case study (current results)
 

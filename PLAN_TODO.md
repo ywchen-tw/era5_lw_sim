@@ -57,13 +57,16 @@ the README. Update this file when a stage lands or a plan changes.
       `reanlib/humidity.py`): T, q and RH at 14 levels common to all three
       sources against the same 123 soundings, with RH recomputed from q for
       every source *including* the observations so saturation conventions
-      cannot masquerade as moisture differences. Result: the ~+3 K
+      cannot masquerade as moisture differences. Collocation is per level at
+      the balloon's drifted position, and the bias panels carry ±1σ bands
+      (see the two backlog items marked done below). Result: the ~+3 K
       warm-surface bias of both global reanalyses is confined to the 2 m
       diagnostic — at 1000 hPa ERA5 is +1.01 K and MERRA-2 already −0.51 K,
-      and above 925 hPa all three are within ±0.41 K — which is why both
+      and from 850 hPa upward all three are within ±0.4 K — which is why both
       underestimate SBI strength while CARRA-2 (cold at 2 m and 1000 hPa)
       overestimates it. Humidity ranks the sources in the reverse order of
-      resolution (q rmse 0.07–0.09 / 0.11–0.16 / 0.15–0.21 g/kg).
+      resolution (q rmse over 1000–700 hPa: 0.07–0.10 / 0.09–0.16 /
+      0.12–0.21 g/kg).
       NOTE the soundings were GTS-transmitted and assimilated, so agreement
       aloft is not independent validation; cross-source comparison is on
       firmer ground than absolute skill.
@@ -117,41 +120,42 @@ the README. Update this file when a stage lands or a plan changes.
 
 ## Backlog / ideas
 
-- [ ] **Collocate each level at its own balloon position** — every stage-6/6b
-      match is nearest-cell (KD-tree) and nearest-analysis-time (6-hourly
-      snap, ≤3 h); nothing is interpolated except the sounding, vertically in
-      log-p. All levels are matched to the LAUNCH position, but the balloon
-      drifts: median 0.2 km at 1000 hPa, 1.5 at 925, 2.8 at 850, 5.6 at 700,
-      10.5 at 500 and 16.5 km at 300 hPa (p90 28 km, max 43 km), reaching
-      300 hPa ~28 min after launch. So the quoted median match distances
-      (ERA5 7 km, MERRA-2 9 km, CARRA-2 1 km) hold only near the surface —
-      above ~850 hPa drift dominates grid spacing, which erodes CARRA-2's
-      resolution advantage in exactly the layers where its moist bias appears.
-      Harmless for the inversion metrics (SBI tops sit near 900-800 hPa, ≤3 km
-      drift), but it should be fixed before the upper-level humidity
-      comparison is pushed further. The level-2 files already carry per-level
-      Latitude/Longitude, so this is a per-level query rather than new data.
+- [x] **Collocate each level at its own balloon position** (stage 6b) — each
+      report level is now matched at the balloon's drifted position, taken
+      from the level-2 per-sample Latitude/Longitude and interpolated on 3-D
+      unit vectors in log-p (pole- and date-line-safe); one analysis time per
+      sounding is kept (300 hPa is reached ~28 min after launch, small vs the
+      6 h cadence), and `match_km` is per (sounding, level). Match distance is
+      now bounded by half a cell at EVERY level — CARRA-2 max 1.7 km even at
+      300 hPa, where launch-position matching could be off by up to 43 km.
+      Outcome: no bias or rmse moved by more than 0.04 K / 0.01 g/kg /
+      0.8 % RH (mostly a small rmse reduction aloft, the expected sign), so
+      the launch-position shortcut was adequate after all — and CARRA-2's
+      moist bias aloft survives proper collocation unchanged (+37 % RH at
+      300 hPa), eliminating drift as its explanation. Stage 6 (`mosaic_compare.py`)
+      still matches at the launch position, which is fine: its metrics live
+      below ~800 hPa where drift ≤ 3 km.
 
-- [ ] **Spread on the stage-6b profile figure** — the panels currently show
-      bias and rmse only, so the sounding-to-sounding scatter behind each
-      point is invisible and the reader cannot tell a consistent offset from
-      a noisy one. Add the standard deviation of the differences, most
-      naturally as a shaded ±1σ band around each bias line (σ² = rmse² −
-      bias², so it needs no new pairing pass). Worth doing before the figure
-      is used to argue that any two sources differ.
+- [x] **Spread on the stage-6b profile figure** — bias panels now carry a
+      shaded ±1σ band of the per-sounding differences (σ from the same pairs;
+      rmse² = bias² + σ²), with the band explained in the figure legend. The
+      bands make the moist-bias story legible at a glance: CARRA-2's upper-
+      level RH band sits entirely on the moist side of zero (consistent
+      offset) while ERA5/MERRA-2 bands straddle it (scatter).
 
 - [ ] **CARRA-2 moist bias aloft** — the profile comparison (stage 6b) shows
       CARRA-2 q running +0.06…+0.08 g/kg high through 750–500 hPa, which in
-      RH terms grows to +22 % at 600 hPa and +36 % at 300 hPa, while ERA5 and
-      MERRA-2 sit within ±6 %. Tested and REJECTED the obvious explanation
-      that CARRA-2's relative humidity is defined over ice: converting its
-      published RH over ice makes the whole column too dry (mean |q bias|
-      0.055 g/kg vs 0.043 for water), so `rh_over: water` stays. A residual
-      height dependence remains — water fits best near the surface, ice best
-      near 600 hPa — so a non-IFS mixed-phase ramp cannot be ruled out.
-      Worth settling against CARRA-2's own published `r` field (which the
-      ingest currently discards after deriving q) before treating the moist
-      bias as physical.
+      RH terms grows to +22 % at 600 hPa and +37 % at 300 hPa, while ERA5 and
+      MERRA-2 sit within ±6 %. Two explanations tested and REJECTED: (1) RH
+      defined over ice — converting its published RH over ice makes the whole
+      column too dry (mean |q bias| 0.055 g/kg vs 0.043 for water), so
+      `rh_over: water` stays; (2) balloon-drift collocation error — matching
+      each level at the balloon's own drifted position leaves the bias
+      unchanged. A residual height dependence in (1) remains — water fits
+      best near the surface, ice best near 600 hPa — so a non-IFS mixed-phase
+      ramp cannot be ruled out. Worth settling against CARRA-2's own published
+      `r` field (which the ingest currently discards after deriving q) before
+      treating the moist bias as physical.
 
 - [ ] **CARRA-2 stage 7 (LW closure)** — blocked on two source gaps, both
       documented in the README: CARRA-2 publishes **no ozone** (needs a

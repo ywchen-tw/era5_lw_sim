@@ -6,9 +6,13 @@ compares the *state* itself — temperature and humidity at standard pressure
 levels — so a bias can be attributed to a layer rather than to a metric.
 
 For every level-2 sounding in the month (Maturilli et al. 2021) the ascent is
-interpolated in log-p onto the report levels, matched to the nearest
-reanalysis cell and analysis time, and paired with that column. Three
-quantities are compared per level:
+interpolated in log-p onto the report levels and matched to the nearest
+analysis time (one per sounding). The nearest reanalysis cell is found PER
+LEVEL, at the balloon's own drifted position — the level-2 files carry
+latitude/longitude for every sample, and the drift (median 16.5 km by
+300 hPa) exceeds every source's grid spacing aloft, so matching everything
+to the launch point would misplace exactly the layers where the sources
+disagree on humidity. Three quantities are compared per level:
 
   T    [K]      directly
   q    [g/kg]   observed q derived from the sonde's RH, T and p
@@ -88,6 +92,8 @@ def soundings_in_month(year: int, month: int) -> list[dict]:
             "p": g["PPPP [hPa]"].to_numpy(dtype=float),
             "t": g["TTT [°C]"].to_numpy(dtype=float) + 273.15,
             "rh": g["RH [%]"].to_numpy(dtype=float),
+            "lat_prof": g["Latitude"].to_numpy(dtype=float),
+            "lon_prof": g["Longitude"].to_numpy(dtype=float),
         })
     return out
 
@@ -108,15 +114,44 @@ def observed_on_levels(snd: dict, levels: np.ndarray):
     return t_out, q_out, rh_out
 
 
+def positions_on_levels(snd: dict, levels: np.ndarray):
+    """Balloon position interpolated onto ``levels`` in log-p.
+
+    Interpolates the components of the position's 3-D unit vector rather than
+    latitude/longitude directly, so the result stays correct next to the pole
+    and across the date line. Outside the ascent's pressure range np.interp
+    clamps to the endpoint positions, and a sounding without usable positions
+    falls back to its launch point — in both cases the observed values there
+    are NaN anyway, so no pair is scored at a made-up position.
+    """
+    p, lat, lon = snd["p"], snd["lat_prof"], snd["lon_prof"]
+    good = np.isfinite(p) & np.isfinite(lat) & np.isfinite(lon)
+    if good.sum() < 2:
+        return (np.full(levels.size, snd["lat"]),
+                np.full(levels.size, snd["lon"]))
+    p, lat, lon = p[good], lat[good], lon[good]
+    order = np.argsort(p)
+    latr, lonr = np.radians(lat[order]), np.radians(lon[order])
+    xyz = np.stack([np.cos(latr) * np.cos(lonr),
+                    np.cos(latr) * np.sin(lonr),
+                    np.sin(latr)])
+    lp = np.log(p[order])
+    comp = np.stack([np.interp(np.log(levels), lp, c) for c in xyz])
+    comp /= np.linalg.norm(comp, axis=0)
+    lat_out = np.degrees(np.arcsin(np.clip(comp[2], -1.0, 1.0)))
+    lon_out = np.degrees(np.arctan2(comp[1], comp[0]))
+    return lat_out, lon_out
+
+
 def build_pairs(cfg: dict, year: int, month: int, levels: np.ndarray,
                 max_dt_h: float = 3.0) -> xr.Dataset:
     """Pair every sounding with its matched reanalysis profile."""
     snds = soundings_in_month(year, month)
     nl = levels.size
     fields = {k: np.full((len(snds), nl), np.nan) for k in
-              ("obs_t", "obs_q", "obs_rh", "rean_t", "rean_q", "rean_rh")}
-    meta = {k: np.full(len(snds), np.nan) for k in
-            ("lat", "lon", "match_km", "match_dt_h")}
+              ("obs_t", "obs_q", "obs_rh", "rean_t", "rean_q", "rean_rh",
+               "match_km")}
+    meta = {k: np.full(len(snds), np.nan) for k in ("lat", "lon", "match_dt_h")}
     times = np.empty(len(snds), dtype="datetime64[ns]")
 
     cache: dict = {}
@@ -127,6 +162,7 @@ def build_pairs(cfg: dict, year: int, month: int, levels: np.ndarray,
         meta["lat"][i], meta["lon"][i] = snd["lat"], snd["lon"]
         obs = observed_on_levels(snd, levels)
         fields["obs_t"][i], fields["obs_q"][i], fields["obs_rh"][i] = obs
+        lat_lev, lon_lev = positions_on_levels(snd, levels)
 
         t_near = ((ts + np.timedelta64(3, "h")).astype("datetime64[6h]")
                   .astype("datetime64[ns]"))
@@ -143,24 +179,39 @@ def build_pairs(cfg: dict, year: int, month: int, levels: np.ndarray,
         dt_h = abs((t_near - ts) / np.timedelta64(1, "h"))
         if dt_h > max_dt_h:
             continue
-        (iy, ix), km = index.query(snd["lat"], snd["lon"])
-        sel = index.isel(iy, ix)
         try:
-            col = plev.sel(valid_time=t_near).isel(**sel)
-            sp_hpa = float(inv["sp"].sel(valid_time=t_near).isel(**sel)) / 100.0
+            snap = plev.sel(valid_time=t_near)
+            sp_map = inv["sp"].sel(valid_time=t_near)
         except KeyError:
             continue
-        meta["match_km"][i], meta["match_dt_h"][i] = km, dt_h
+        meta["match_dt_h"][i] = dt_h
 
-        p_src = col["pressure_level"].values.astype(float)
-        t_src = col["t"].values.astype(float)
-        q_src = col["q"].values.astype(float) if "q" in col else np.full_like(t_src, np.nan)
+        # one analysis time per sounding (the balloon reaches 300 hPa ~28 min
+        # after launch, small against the 6 h cadence), but the cell is
+        # re-queried per level at the balloon's drifted position; columns are
+        # cached because adjacent levels usually land in the same cell
+        p_src = snap["pressure_level"].values.astype(float)
+        cols: dict[tuple[int, int], tuple] = {}
         for j, lev in enumerate(levels):
             k = np.flatnonzero(np.isclose(p_src, lev))
-            if k.size == 0 or lev > sp_hpa:      # absent, or below ground
+            if k.size == 0:
                 continue
+            (iy, ix), km = index.query(lat_lev[j], lon_lev[j])
+            if (iy, ix) not in cols:
+                sel = index.isel(iy, ix)
+                cell = snap.isel(**sel)
+                cols[iy, ix] = (
+                    cell["t"].values.astype(float),
+                    cell["q"].values.astype(float) if "q" in cell else None,
+                    float(sp_map.isel(**sel)) / 100.0,
+                )
+            t_src, q_src, sp_hpa = cols[iy, ix]
+            if lev > sp_hpa:                     # below ground at this cell
+                continue
+            fields["match_km"][i, j] = km
             fields["rean_t"][i, j] = t_src[k[0]]
-            fields["rean_q"][i, j] = q_src[k[0]]
+            if q_src is not None:
+                fields["rean_q"][i, j] = q_src[k[0]]
 
     with np.errstate(invalid="ignore", divide="ignore"):
         fields["rean_rh"] = relative_humidity_from_q(
@@ -184,18 +235,23 @@ def build_pairs(cfg: dict, year: int, month: int, levels: np.ndarray,
         "n_soundings": len(snds),
         "rh_convention": ("RH recomputed from q over water for observations "
                           "and reanalysis alike (reanlib/humidity.py)"),
+        "collocation": ("nearest cell PER LEVEL at the balloon's drifted "
+                        "position (level-2 per-sample lat/lon, interpolated "
+                        "on unit vectors in log-p); one analysis time per "
+                        "sounding, nearest within 3 h of launch"),
     }
     return ds
 
 
 def level_stats(ds: xr.Dataset, var: str) -> dict[str, np.ndarray]:
-    """Per-level n, bias, rmse and correlation for one quantity."""
+    """Per-level n, bias, rmse, spread (σ of differences) and correlation."""
     o = ds[f"obs_{var}"].values
     r = ds[f"rean_{var}"].values
     ok = np.isfinite(o) & np.isfinite(r)
     n = ok.sum(axis=0)
     bias = np.full(ds.sizes["level"], np.nan)
     rmse = np.full(ds.sizes["level"], np.nan)
+    sigma = np.full(ds.sizes["level"], np.nan)
     corr = np.full(ds.sizes["level"], np.nan)
     for j in range(ds.sizes["level"]):
         m = ok[:, j]
@@ -204,9 +260,10 @@ def level_stats(ds: xr.Dataset, var: str) -> dict[str, np.ndarray]:
         d = r[m, j] - o[m, j]
         bias[j] = d.mean()
         rmse[j] = np.sqrt((d ** 2).mean())
+        sigma[j] = d.std()                       # rmse² = bias² + σ²
         if o[m, j].std() > 0 and r[m, j].std() > 0:
             corr[j] = np.corrcoef(o[m, j], r[m, j])[0, 1]
-    return {"n": n, "bias": bias, "rmse": rmse, "r": corr}
+    return {"n": n, "bias": bias, "rmse": rmse, "sigma": sigma, "r": corr}
 
 
 VARS = (("t", "temperature", "K"), ("q", "specific humidity", "g/kg"),
@@ -244,6 +301,10 @@ def fig_report(per_source: dict[str, xr.Dataset], year: int, month: int,
             ax = axes[row, col]
             for src, ds in per_source.items():
                 st = level_stats(ds, var)
+                if metric == "bias":             # ±1σ sounding-to-sounding
+                    ax.fill_betweenx(levels, st["bias"] - st["sigma"],
+                                     st["bias"] + st["sigma"], lw=0,
+                                     color=SOURCE_COLOURS[src], alpha=0.13)
                 ax.plot(st[metric], levels, "-o", ms=3, lw=1.4,
                         color=SOURCE_COLOURS[src], label=SOURCE_LABELS[src])
             if metric == "bias":
@@ -261,7 +322,11 @@ def fig_report(per_source: dict[str, xr.Dataset], year: int, month: int,
                 ax.set_title(long, fontsize=11)
     # figure-level legend below every panel: inside panel (a) it sat directly
     # on the 950-1000 hPa lines, which is where the largest biases are
+    from matplotlib.patches import Patch
+
     handles, labels = axes[0, 0].get_legend_handles_labels()
+    handles.append(Patch(facecolor="#888888", alpha=0.25, lw=0))
+    labels.append("±1σ of differences")
     fig.legend(handles, labels, loc="outside lower center", ncol=len(labels),
                frameon=False, fontsize=10)
     fig.suptitle(f"Reanalysis vs MOSAiC radiosondes, {calendar.month_name[month]} "
@@ -301,9 +366,15 @@ def main(argv: list[str] | None = None) -> int:
         ds = build_pairs(cfg, args.year, args.month, REPORT_LEVELS)
         target.parent.mkdir(parents=True, exist_ok=True)
         ds.to_netcdf(target)
-        matched = int(np.isfinite(ds["match_km"].values).sum())
+        matched = int(np.isfinite(ds["match_dt_h"].values).sum())
+        km = ds["match_km"].values
         print(f"wrote {target}")
         print(f"  {matched} / {ds.sizes['sounding']} soundings matched")
+        with np.errstate(all="ignore"):
+            med = np.nanmedian(km, axis=0)
+        print("  median match km by level: "
+              + "  ".join(f"{int(l)}:{m:.1f}" for l, m in
+                          zip(ds["level"].values, med) if np.isfinite(m)))
         print(print_table({cfg["source"]: ds}))
         return 0
 
