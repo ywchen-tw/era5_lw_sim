@@ -598,7 +598,17 @@ expedition drifting at 85–88.6°N inside the domain (final ERA5, `expver 0001`
   observation time — the radiosonde/satellite increment moves T/q away from
   the trajectory the radiation scheme integrated, by +5.5 ± 10 W/m² in LW↓
   equivalent), while the off-synoptic 11 UTC analysis stays on it. LW↑ is
-  insensitive throughout (rmse 0.5 W/m²) — the asymmetry again. Cloudy (overcast, ERA5 clwc/ciwc as wc/ic files): LW↓
+  insensitive throughout (rmse 0.5 W/m²) — the asymmetry again.
+  **CARRA-2 corroborates this from the other side**: its clear-sky closure
+  (`--source carra2`, n = 500 at 12Z on 85–90°N; ozone from the afglsw
+  climatology, standard-atmosphere splice from 50 hPa, reference =
+  forecast-stream 1-h windows bracketing the instant, differenced by
+  `io_carra2.normalize_carra2_rad`) gives LW↓ r = +0.92, bias +1.56 W/m²
+  (rmse 2.42; +3.05 with the far-IR tail) and LW↑ r = +0.999, bias
+  −0.79 W/m² — tight at exactly the synoptic hour where ERA5 scattered,
+  because the 12–13Z window comes from the forecast initialized AT the 12Z
+  analysis, i.e. a reference that sits on the analyzed trajectory.
+  Cloudy (overcast, ERA5 clwc/ciwc as wc/ic files): LW↓
   r = 0.947 (bias +1.3, rmse 6.2 W/m², widest for thin clouds), LW↑ r = 0.983
   (bias+tail −1.3 W/m²); RRTMG's cloudy LW↓ runs ~+5.8 W/m² above
   libRadtran+tail from cloud-optics parameterization differences. Extending

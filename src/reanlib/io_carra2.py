@@ -54,7 +54,7 @@ PROJ_GRID_SPACING = 2500.0      # m, for the regularity check
 # the CDS may instead use the long CDS names, which VAR_ALIASES maps. 'r'
 # (relative humidity) is converted to 'q' during normalization, not renamed.
 PLEV_VARS = ("t", "r", "clwc", "ciwc", "cc")
-SFC_VARS = ("t2m", "skt", "sp", "lsm")
+SFC_VARS = ("t2m", "skt", "sp", "lsm", "siconc", "tcc")
 CLOUD_VARS = ("clwc", "ciwc", "cc")   # stage-7 top-up of a trimmed plev file
 RAD_VARS = ("str", "strd")            # forecast stream, accumulated J m-2
 # Everything the inversion metrics actually need is mandatory; the rest is
@@ -63,7 +63,7 @@ RAD_VARS = ("str", "strd")            # forecast stream, accumulated J m-2
 # breaking normalization. Stages 1-6 read only t and q (from r), plus
 # t2m/skt/sp -- the cloud fields and lsm are for radiative-transfer work
 # (stage 7), which fetches them separately via the `cloud` kind.
-OPTIONAL_VARS = frozenset({"clwc", "ciwc", "cc", "lsm"})
+OPTIONAL_VARS = frozenset({"clwc", "ciwc", "cc", "lsm", "siconc", "tcc"})
 KIND_VARS = {"plev": PLEV_VARS, "sfc": SFC_VARS, "cloud": CLOUD_VARS}
 
 # CDS deliveries have used several coordinate spellings; map them all.
@@ -83,10 +83,18 @@ VAR_ALIASES = {
     "t": "t", "temperature": "t",
     "clwc": "clwc", "specific_cloud_liquid_water_content": "clwc",
     "ciwc": "ciwc", "specific_cloud_ice_water_content": "ciwc",
-    "cc": "cc", "cloud_cover": "cc",
+    # CARRA-2's GRIB short name for per-level cloud cover is `ccl`, not
+    # ERA5's `cc` (seen in the first real cloud delivery)
+    "cc": "cc", "cloud_cover": "cc", "ccl": "cc",
     "lsm": "lsm", "land_sea_mask": "lsm",
     "str": "str", "surface_net_thermal_radiation": "str",
     "strd": "strd", "thermal_surface_radiation_downwards": "strd",
+    # classification fields; short names guessed until the first real
+    # delivery confirms them (cf. ccl above) — the unknown-variable guard in
+    # normalize_carra2 turns a wrong guess into a loud failure, raw retained
+    "siconc": "siconc", "ci": "siconc", "icec": "siconc",
+    "sea_ice_area_fraction": "siconc",
+    "tcc": "tcc", "tcdc": "tcc", "total_cloud_cover": "tcc",
 }
 
 
@@ -200,6 +208,15 @@ def normalize_carra2(ds: xr.Dataset, kind: str, cfg: dict | None = None,
     if missing or not any(v in ds for v in wanted):
         raise KeyError(f"CARRA-2 {kind} delivery is missing variable(s) "
                        f"{missing or list(wanted)}; got {sorted(ds.data_vars)}")
+    # a delivered data variable that maps to nothing we recognize means a
+    # GRIB short name VAR_ALIASES does not know (cloud cover arrived as `ccl`
+    # once already) — dropping it silently would discard paid-for data, so
+    # fail loudly; the raw delivery is retained by the caller on exception
+    unknown = sorted(set(ds.data_vars) - set(wanted))
+    if unknown:
+        raise KeyError(f"CARRA-2 {kind} delivery contains unrecognized "
+                       f"variable(s) {unknown} — add them to "
+                       "io_carra2.VAR_ALIASES")
     ds = ds[[v for v in wanted if v in ds]]
 
     for coord in ("latitude", "longitude"):

@@ -38,6 +38,11 @@ download:
     - surface_net_thermal_radiation
     - surface_solar_radiation_downwards
     - surface_thermal_radiation_downwards
+    # classification fields for the stratified analysis: surface type from
+    # land_sea_mask + sea_ice_cover, sky state from total_cloud_cover
+    - land_sea_mask
+    - sea_ice_cover
+    - total_cloud_cover
   pressure_levels: [1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175,
                     200, 225, 250, 300, 350, 400, 450, 500, 550, 600, 650,
                     700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000]
@@ -51,11 +56,17 @@ merra2:
     plev: M2I3NPASM   # inst3_3d_asm_Np: 3-hourly INSTANTANEOUS, 42 pressure levels
     sfc: M2I1NXASM    # inst1_2d_asm_Nx: hourly INSTANTANEOUS single-level
     rad: M2T1NXRAD    # tavg1_2d_rad_Nx: 1-h time-averaged W/m2, stamped HH:30
+    ocn: M2T1NXOCN    # tavg1_2d_ocn_Nx: 1-h time-averaged, stamped HH:30
+    const: M2C0NXASM  # const_2d_asm_Nx: time-invariant, ONE file total
   version: "5.12.4"
   plev_variables: [T, QV, O3, QL, QI]   # -> t, q, o3, clwc, ciwc
   sfc_variables: [T2M, TS, PS]          # -> t2m, skt, sp
   # Surface radiation for stage 7 (LWdn = LWGAB/EMIS; LWup = LWGEM + refl.)
   rad_variables: [LWGAB, LWGEM, LWGABCLR, EMIS, CLDTOT]
+  # Classification fields for the stratified analysis: sea-ice fraction
+  # (-> siconc) and static land/ocean fractions (-> frland/frlandice/frocean)
+  ocn_variables: [FRSEAICE]
+  const_variables: [FRLAND, FRLANDICE, FROCEAN]
   # Hours must be multiples of 3 (the M2I3NPASM cadence).
   default_hours: [0, 6, 12, 18]
 
@@ -67,16 +78,17 @@ carra2:
   # the SUB-DAILY entry: reanalysis-pan-carra-means holds only daily/monthly
   # aggregates, which cannot feed the inversion metrics
   dataset: reanalysis-pan-carra
-  # CARRA-2 keeps its own, smaller domain. Cells scale as tan^2((90-lat)/2),
-  # so 85-90N is a QUARTER of the 80-90N cap: 199 k vs 796 k cells per field,
-  # ~318 MB vs 1.27 GB of profiles per day. ERA5 and MERRA-2 keep the global
-  # 80-90N `area` above, so their existing products are untouched.
-  # Trade-off: 85-90N is all pack ice — it excludes N Greenland (83.7N),
-  # Ellesmere (83.1N), Franz Josef Land (81.9N), Severnaya Zemlya (81.3N) and
-  # Svalbard (80.8N), i.e. the terrain where 2.5 km resolution matters most,
-  # and makes domain means non-comparable with the 80-90N ERA5/MERRA-2 ones.
-  # All 123 January 2020 MOSAiC soundings (86.7-87.6N) stay inside it.
-  area: [90, -180, 85, 180]
+  # WIDENED to the full 80-90N cap (matching ERA5/MERRA-2) for the stratified
+  # clear/cloudy x surface-type analysis: 85-90N is all pack ice, so land /
+  # open-water / marginal-ice categories only exist south of it (N Greenland
+  # 83.7N, Ellesmere 83.1N, Franz Josef Land 81.9N, Severnaya Zemlya 81.3N,
+  # Svalbard 80.8N, Fram Strait / Barents open water). Cells scale as
+  # tan^2((90-lat)/2): 80-90N is 4x the cells of the original 85-90N domain
+  # (~796 k vs 199 k per field). CDS request COST does not scale with area
+  # (measured: plev 960/day either way), only transfer volume and disk do.
+  # The January 2020 85-90N results remain reproducible from 80-90N files via
+  # `monthly_stats.py --area 90 -180 85 180`.
+  area: [90, -180, 80, 180]
   # CARRA-2 has no specific humidity on pressure levels (q is derived from
   # relative_humidity) and no ozone at all, which is why stage 7 does not
   # accept --source carra2.
@@ -92,6 +104,12 @@ carra2:
     - 2m_temperature
     - skin_temperature
     - surface_pressure
+    # classification fields for the stratified analysis: surface type from
+    # land_sea_mask + sea_ice_area_fraction, sky state from total_cloud_cover
+    # (all three names validated against the CDS costing endpoint)
+    - land_sea_mask
+    - sea_ice_area_fraction
+    - total_cloud_cover
   # All 20 CARRA-2 pressure levels. The top is 50 hPa, not ERA5's 1 hPa.
   pressure_levels: [50, 70, 100, 150, 200, 250, 300, 400, 500, 600, 700,
                     750, 800, 825, 850, 875, 900, 925, 950, 1000]

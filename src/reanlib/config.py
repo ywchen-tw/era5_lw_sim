@@ -187,6 +187,20 @@ def sfc_path(cfg: dict, date: dt.date) -> Path:
     return _day_dir(cfg, "data", date) / f"{cfg['source']}_sfc_{date:%Y%m%d}.nc"
 
 
+def ocn_path(cfg: dict, date: dt.date) -> Path:
+    """MERRA-2 ocean-collection daily file (sea-ice fraction, M2T1NXOCN)."""
+    if cfg["source"] != "merra2":
+        raise ValueError("ocn_path is MERRA-2-only")
+    return _day_dir(cfg, "data", date) / f"{cfg['source']}_ocn_{date:%Y%m%d}.nc"
+
+
+def const_path(cfg: dict) -> Path:
+    """MERRA-2 time-invariant constants (land/ocean fractions, M2C0NXASM)."""
+    if cfg["source"] != "merra2":
+        raise ValueError("const_path is MERRA-2-only")
+    return _root(cfg, "data") / "merra2_const.nc"
+
+
 def rad_path(cfg: dict, date: dt.date) -> Path:
     """Surface-radiation daily file (MERRA-2 M2T1NXRAD, or CARRA-2's
     differenced forecast-stream fluxes; ERA5 radiation lives in the sfc file

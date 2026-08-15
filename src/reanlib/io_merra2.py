@@ -55,7 +55,14 @@ SFC_RENAMES = {"T2M": "t2m", "TS": "skt", "PS": "sp"}
 # ERA5 has no equivalent variables, so only the case is normalized
 RAD_RENAMES = {"LWGAB": "lwgab", "LWGEM": "lwgem", "LWGABCLR": "lwgabclr",
                "EMIS": "emis", "CLDTOT": "cldtot"}
-KIND_RENAMES = {"plev": PLEV_RENAMES, "sfc": SFC_RENAMES, "rad": RAD_RENAMES}
+# ocean collection (M2T1NXOCN, 1-h means stamped HH:30 like rad): sea-ice
+# fraction for the surface-type classification
+OCN_RENAMES = {"FRSEAICE": "siconc"}
+# time-invariant constants (M2C0NXASM): land/ocean fractions, one file total
+CONST_RENAMES = {"FRLAND": "frland", "FRLANDICE": "frlandice",
+                 "FROCEAN": "frocean"}
+KIND_RENAMES = {"plev": PLEV_RENAMES, "sfc": SFC_RENAMES, "rad": RAD_RENAMES,
+                "ocn": OCN_RENAMES, "const": CONST_RENAMES}
 COORD_RENAMES = {"time": "valid_time", "lat": "latitude", "lon": "longitude",
                  "lev": "pressure_level"}
 

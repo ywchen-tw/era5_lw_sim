@@ -35,7 +35,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from reanlib.config import load_config, plev_path, rad_path, sfc_path, source_area
+from reanlib.config import (const_path, load_config, ocn_path, plev_path,
+                            rad_path, sfc_path, source_area)
 from reanlib.io_merra2 import hours_in_file, normalize_merra2, require_earthdata_credentials
 
 
@@ -44,6 +45,15 @@ def find_granule(kind: str, cfg: dict, date: dt.date):
     import earthaccess
 
     m2 = cfg["merra2"]
+    if kind == "const":
+        # the constants collection holds ONE time-invariant granule, dated
+        # outside any analysis period — search without a temporal window
+        results = earthaccess.search_data(
+            short_name=m2["collections"][kind], version=m2["version"])
+        if not results:
+            raise FileNotFoundError(
+                f"no {m2['collections'][kind]} constants granule found")
+        return results[0]
     results = earthaccess.search_data(
         short_name=m2["collections"][kind], version=m2["version"],
         temporal=(date.isoformat(), (date + dt.timedelta(days=1)).isoformat()))
@@ -81,14 +91,17 @@ def subset_via_opendap(url: str, kind: str, cfg: dict, date: dt.date,
     return subset_local(ds, kind, cfg, date, hours)
 
 
-def subset_local(ds, kind: str, cfg: dict, date: dt.date, hours: list[int]):
+def subset_local(ds, kind: str, cfg: dict, date: dt.date,
+                 hours: "list[int] | None"):
     north, west, south, east = source_area(cfg)
     m2 = cfg["merra2"]
     variables = m2[f"{kind}_variables"]
     sel = ds[list(variables)].sel(lat=slice(south, north), lon=slice(west, east))
-    keep = [t for t in sel["time"].values
-            if t.astype("datetime64[s]").item().hour in set(hours)]
-    return sel.sel(time=keep).load()
+    if hours is not None:      # None: keep every step (constants have one)
+        keep = [t for t in sel["time"].values
+                if t.astype("datetime64[s]").item().hour in set(hours)]
+        sel = sel.sel(time=keep)
+    return sel.load()
 
 
 def download_one(kind: str, cfg: dict, date: dt.date, hours: list[int],
@@ -99,14 +112,19 @@ def download_one(kind: str, cfg: dict, date: dt.date, hours: list[int],
 
     m2 = cfg["merra2"]
     status = "downloaded"
-    want = set(hours)
-    if target.exists() and not force:
-        have = hours_in_file(target, date)
-        if want <= have:
+    if kind == "const":
+        if target.exists() and not force:
             return "skipped"
-        want |= have
-        status = "merged"
-    hours = sorted(want)
+        hours = None
+    else:
+        want = set(hours)
+        if target.exists() and not force:
+            have = hours_in_file(target, date)
+            if want <= have:
+                return "skipped"
+            want |= have
+            status = "merged"
+        hours = sorted(want)
 
     if dry_run:
         print(f"  {m2['collections'][kind]} v{m2['version']} {date} "
@@ -151,8 +169,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hours", type=int, nargs="+", default=None,
                         help="UTC hours, multiples of 3 (default from config)")
     parser.add_argument("--datasets", nargs="+",
-                        choices=["plev", "sfc", "rad"],
-                        default=["plev", "sfc", "rad"])
+                        choices=["plev", "sfc", "rad", "ocn", "const"],
+                        default=["plev", "sfc", "rad"],
+                        help="ocn (M2T1NXOCN sea-ice fraction) and const "
+                             "(M2C0NXASM land/ocean fractions, one file "
+                             "total) feed the stratified surface-type "
+                             "classification")
     parser.add_argument("--config", default=None, help="path to config.yaml")
     parser.add_argument("--jobs", type=int, default=4,
                         help="concurrent downloads (default 4)")
@@ -173,14 +195,18 @@ def main(argv: list[str] | None = None) -> int:
                  f"collection is 3-hourly (00, 03, ..., 21 UTC)")
     days = parse_days(args.days, args.year, args.month)
 
-    path_fn = {"plev": plev_path, "sfc": sfc_path, "rad": rad_path}
-    # rad (M2T1NXRAD) is time-averaged, stamped HH:30; the two windows
+    path_fn = {"plev": plev_path, "sfc": sfc_path, "rad": rad_path,
+               "ocn": ocn_path, "const": lambda cfg, date: const_path(cfg)}
+    # rad/ocn (M2T1NX*) are time-averaged, stamped HH:30; the two windows
     # bracketing analysis instant H are stamped (H-1):30 and H:30
-    kind_hours = {"plev": hours, "sfc": hours,
-                  "rad": sorted({x for h in hours for x in (h - 1, h)
-                                 if 0 <= x <= 23})}
+    bracket = sorted({x for h in hours for x in (h - 1, h) if 0 <= x <= 23})
+    kind_hours = {"plev": hours, "sfc": hours, "rad": bracket,
+                  "ocn": bracket, "const": None}
     tasks = [(dt.date(args.year, args.month, day), kind)
-             for day in days for kind in args.datasets]
+             for day in days for kind in args.datasets if kind != "const"]
+    if "const" in args.datasets:
+        # one time-invariant file for the whole dataset, not one per day
+        tasks.append((dt.date(args.year, args.month, days[0]), "const"))
 
     if args.dry_run:
         for date, kind in tasks:

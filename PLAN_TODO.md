@@ -171,23 +171,26 @@ the README. Update this file when a stage lands or a plan changes.
       re-normalize the month from the retained chunks, if upper-air CARRA-2
       humidity is ever used quantitatively.
 
-- [ ] **CARRA-2 stage 7 (LW closure)** — blocked on two source gaps, both
-      documented in the README: CARRA-2 publishes **no ozone** (needs a
-      climatological profile) and its profile top is **50 hPa**, so the
-      standard-atmosphere splice starts there instead of at 1 hPa. Its
-      surface radiation is also **forecast-stream only**
-      (`product_type: forecast` + `leadtime_hour`, accumulated from the cycle
-      start), so the reference flux needs a second request and leadtime
-      differencing rather than ERA5's single sfc file. At 2.5 km a
-      lower-resolution pixel sample would be the sane starting point.
-      The forecast request has now been TESTED and works: `product_type:
-      forecast` + `leadtime_hour: [1, 2]` returns `str` and `strd` — ERA5's
-      own short names — dimensioned (step, y, x) with `time` the cycle start
-      (12 UTC) and `valid_time` 13:00/14:00, so an hourly flux is the
-      difference of consecutive steps. Also confirmed on an 80-90N probe:
-      CARRA-2 EXTRAPOLATES below-ground pressure levels rather than filling
-      them (244,300 of 624,693 band cells have sp < 1000 hPa and every one
-      has a finite t(1000)), so it behaves like ERA5, not MERRA-2.
+- [x] **CARRA-2 stage 7 (LW closure), clear-sky** — all three source gaps
+      closed and the first 500-pixel run done (2020-01-01 12Z, 85-90N,
+      reptran coarse): `carra2_download --datasets cloud rad` fetches the
+      per-level cloud fields (GRIB short name `ccl`, not `cc` — alias added,
+      plus a loud unknown-variable guard so unrecognized short names can
+      never be dropped silently again) and the forecast-stream str/strd,
+      which `io_carra2.normalize_carra2_rad` differences into 1-h lwdn/lwup
+      windows stamped at the window end; ozone comes from the afglsw
+      subarctic-winter climatology (CARRA-2 publishes none) and the
+      standard-atmosphere splice starts at 50 hPa (verified continuous).
+      RESULT: LWdn r=+0.92, bias +1.56 W/m2 (+3.05 with the far-IR tail),
+      rmse 2.42; LWup r=+0.999, bias -0.79 W/m2 (n=500 clear; only 0.6 % of
+      the 12Z domain passed the clear screens). Notable: this closure is at
+      12Z, the synoptic hour where ERA5's own clear-sky closure fell apart
+      (stage 7c, r~0.15) — CARRA-2's reference includes the 12-13Z window
+      from the forecast initialized AT the 12Z analysis, so the flux sits on
+      the analyzed trajectory. Independent support for the stage-7c
+      state-time interpretation. Cloudy runs are possible (cloud fields are
+      in the day-1 plev file) but not yet run. NOTE the run predates the
+      80-90N re-download; its manifest/results record the 85-90N grid.
 - [x] **Three-source comparison over matched DOMAINS** — the
       sounding-by-sounding comparison was already like-for-like; the
       matched-domain *climatology* now exists too, via `monthly_stats.py
