@@ -84,8 +84,9 @@ the README. Update this file when a stage lands or a plan changes.
 
 ## Next (in rough priority order)
 
-- [ ] **Stratified inversion statistics: (clear / partial / cloudy) x
-      (land / open water / marginal ice / pack ice)** — IN PROGRESS.
+- [x] **Stratified inversion statistics: (clear / partial / cloudy) x
+      (land / open water / marginal ice / pack ice)** — DONE, all three
+      sources.
       Code is done and committed: `reanlib/classes.py` (thresholds: land
       lsm ≥ 0.5; SIC < 5 % open / > 95 % pack / marginal between;
       tcc ≤ 5 % clear / ≥ 95 % cloudy / partial between — clear sits at 5 %
@@ -132,7 +133,20 @@ the README. Update this file when a stage lands or a plan changes.
       * Sky-share disagreement: CARRA-2 sees more partial (37 vs 23 %) and
         less overcast (58 vs 73 %) domain-time than ERA5 from each's own
         tcc.
-      MERRA-2 still pending its ocn/const/rad fetches.
+      MERRA-2 DONE (baseline 43.8 %/5.93 K reproduced; first fetch attempt
+      hung on a dead OPeNDAP socket for 7 h — killed, `merra2_download.py`
+      now sets `socket.setdefaulttimeout(120)` so stalls raise into the
+      full-granule fallback; note the era5 env has no `pydap`, so every
+      granule comes via that fallback). Its table completes the picture:
+      cloudy pack 34.7 %/5.4 K (vs ERA5 59.8, CARRA-2 85.8 — the
+      three-source overcast spread is a factor of 2.5 while clear pack
+      agrees 96.8-98.1 % everywhere, ERA5/MERRA-2 clear-pack strength
+      within 0.1 K); land 100 %/10.7 K clear, 87.5 %/9.4 K cloudy (with
+      ERA5, against CARRA-2's ~8 K — resolution story holds); open water
+      ≤ 3 %/1.4 K; almost never clear (1.3 % of domain-time, CLDTOT floor
+      again), overcast 64 % / partial 34 %. Bottom line in README: the
+      overall 89/62/44 % detection ranking is set almost entirely by how
+      each model's boundary layer responds to cloud.
 - [x] **CARRA-2 at 80-90N** — DONE and verified. January re-downloaded on
       the full cap (3 plev + 1 sfc requests; measured cost does NOT scale
       with area, so chunking stayed 12 d), day files now 891x892 with
@@ -149,9 +163,11 @@ the README. Update this file when a stage lands or a plan changes.
       identical). Full-domain CARRA-2 means are now 89.0 % / 9.39 K (the
       80-85N band adds open water and marginal ice). Remaining consequences:
       stage-5 PCA not yet rerun on the wider domain (committed EOFs
-      72.8/13.9 % remain documented as 85-90N); day-1 cloud/rad re-fetch at
-      80-90N queued for stage-7 continuity. The 85-90N raw plev chunks stay
-      on disk as the published-r archive for the humidity-convention work.
+      72.8/13.9 % remain documented as 85-90N); day-1 cloud/rad re-fetched
+      at 80-90N and verified (cloud vars merged into the 891x892 plev, rad
+      replaced on the same grid — stage-7 clear + cloudy both run on it).
+      The 85-90N raw plev chunks stay on disk as the published-r archive
+      for the humidity-convention work.
 - [ ] **CURC fine-grid stage-8 run** — local `reptran coarse` (~15 cm⁻¹)
       under-resolves far-IR channels (3–9 cm⁻¹ wide); science-grade BT and
       K need `reptran fine` on CURC (`slurm/curc_prefire_bt.sh`; NEVER
@@ -306,12 +322,27 @@ the README. Update this file when a stage lands or a plan changes.
       the stage-7c footgun (extra 11Z/13Z hours in a daily file skewing a
       re-aggregation). `profile_analysis` (PCA) does not have the knob yet —
       add it there if a matched-domain EOF comparison is ever needed.
-- [ ] **CARRA-2 stage 7 cloudy (overcast)** — now unblocked: the day-1 plev
-      file carries clwc/ciwc/cc (until the 80-90N replacement lands; re-fetch
-      `--datasets cloud` afterwards) and the rad reference works. Screening
-      as for ERA5 (cc_max ≥ 0.99 + condensate); note the day-1 12Z condensate
-      was strikingly low over the pack (max clwc 5e-7 kg/kg), so the overcast
-      population may need another day or the 80-90N domain.
+- [x] **CARRA-2 stage 7 cloudy (overcast)** — DONE (day-1 cloud/rad
+      re-fetched at 80-90N first; day-1 plev again carries clwc/ciwc/cc, rad
+      on the same 891x892 grid). n=500 overcast pixels (cc ≥ 0.99 is only
+      0.1 % of the domain — pure thin ice cloud, LWP ≤ 9, IWP 3-39 g/m²):
+      LW↑ closes (+0.15 W/m², r=0.963) but sim LW↓ runs 24.5 W/m² BELOW
+      CARRA-2's own flux (r=+0.970, σ≈6), deficit ∝ cloud thinness (−12 at
+      TWP 40-80 → −39 below 5 g/m²). NOT state-time: the 12-13Z window
+      (forecast initialized from the simulated 12Z analysis) shows the same
+      deficit (−27.0) as the 09Z-cycle 11-12Z window (−25.2). About half is
+      the fixed ice r_eff: 25 → 15 → 13 µm moves bias+tail
+      −24.5 → −15.3 → −12.9 W/m²; extrapolated closure ~7-9 µm, below the
+      Fu floor (empirically between 12.0 and 12.5 µm — uvspec rejects the
+      ic file below it). Sharp contrast: ERA5's overcast population is also
+      pure ice (IWP med 38) yet closes at +1.3 with the same 25 µm optics.
+      Reading: per archived gram, CARRA-2's radiation is far more
+      LW-emissive (small diagnosed crystals, or condensate under-archived
+      vs what its radiation used) — its overcast clouds are radiatively
+      opaque, so its 85.8 % under-cloud SBI retention is a boundary-layer
+      property, not weak cloud forcing. (Sensitivity runs were done by
+      rewriting the reff column of the ic_px files; canonical 25 µm
+      results/figure restored and re-verified byte-identical afterwards.)
 - [x] **CARRA-2 first real-data validation** — January 2020 downloaded and
       run end to end through stages 1–6. The delivery exposed five bugs the
       synthetic test could not (it built its grid from the same assumptions

@@ -29,6 +29,7 @@ import argparse
 import concurrent.futures
 import datetime as dt
 import os
+import socket
 import sys
 import tempfile
 from pathlib import Path
@@ -194,6 +195,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(f"invalid hour(s) {bad}: the M2I3NPASM pressure-level "
                  f"collection is 3-hourly (00, 03, ..., 21 UTC)")
     days = parse_days(args.days, args.year, args.month)
+
+    # neither pydap nor the earthaccess session sets a socket timeout, so a
+    # dead OPeNDAP connection hangs the worker forever instead of raising
+    # into the full-granule fallback
+    socket.setdefaulttimeout(120)
 
     path_fn = {"plev": plev_path, "sfc": sfc_path, "rad": rad_path,
                "ocn": ocn_path, "const": lambda cfg, date: const_path(cfg)}

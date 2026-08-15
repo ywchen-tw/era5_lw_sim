@@ -187,10 +187,12 @@ CARRA-2 notes:
   less than 1 m.
 - **No ozone at all, and the profile top is 50 hPa** rather than ERA5's
   1 hPa. Neither matters for the inversion metrics (the SBI scan stops at
-  500 hPa), but both do matter for radiative transfer, which is why
-  `lrt_sim.py` / `rrtmg_sim.py` do not accept `--source carra2`: a stage-7
-  port would need a climatological ozone profile and a standard-atmosphere
-  splice from 50 hPa up instead of from 1 hPa.
+  500 hPa), but both do matter for radiative transfer. The stage-7 port
+  (`lrt_sim.py --source carra2`) fills the gap with the afglsw
+  (subarctic-winter) climatological ozone profile — interpolated in log-p
+  via the o3/air number-density ratio — and the usual standard-atmosphere
+  splice, starting from 50 hPa up instead of from 1 hPa (splice continuity
+  ratio 0.93 at the seam).
 - **Radiation is in the forecast stream, not the analysis.** Surface fluxes
   (`thermal_surface_radiation_downwards`, `surface_net_thermal_radiation`)
   require `product_type: forecast` with a `leadtime_hour`, and are
@@ -471,24 +473,35 @@ January 2020, 80–90°N, SBI frequency / conditional strength:
 | | clear pack | cloudy pack | clear land | cloudy land | open water (cloudy) |
 |---|---|---|---|---|---|
 | ERA5 | 97.5 % / 8.3 K | 59.8 % / 6.2 K | 100 % / 11.2 K | 92.7 % / 9.3 K | 0.4 % / 1.1 K |
+| MERRA-2 | 96.8 % / 8.2 K | 34.7 % / 5.4 K | 100 % / 10.7 K | 87.5 % / 9.4 K | 3.0 % / 1.4 K |
 | CARRA-2 | 98.1 % / 12.6 K | 85.8 % / 8.9 K | 99.8 % / 8.3 K | 87.8 % / 6.7 K | 6.2 % / 1.6 K |
 
-Three structural results: (1) **the ERA5–CARRA-2 disagreement lives under
-cloud** — clear-sky pack-ice detection is nearly identical (97.5 vs 98.1 %)
-while under overcast ERA5 loses 38 points of SBI frequency and CARRA-2 only
-12, so CARRA-2's over-detection (92 % overall vs 67.5 % observed at MOSAiC)
-is specifically a cloudy-sky behaviour — either its clouds are less
-LW-opaque or its stable boundary layer survives cloud cover; (2) **land
-reverses the ranking** — over the ice sheet ERA5 holds ~11 K inversions
-where 2.5 km CARRA-2 holds ~8 K, consistent with resolved slopes venting
-the katabatic basins that a 0.25° surface smooths flat; (3) **open water
-suppresses SBIs in both** (≤ 6 % frequency, ≤ 2.4 K). Cloud is the largest
-single control in every source. The two also disagree on the sky itself:
-CARRA-2 classifies more of the domain-time as partial (37 vs 23 %) and less
-as overcast (58 vs 73 %). MERRA-2 joins when its classification fetches
-land. Caveats: the land category is mostly ice sheet standing above the
+Three structural results: (1) **the cross-source disagreement lives under
+cloud** — clear-sky pack-ice detection is nearly identical in all three
+(96.8–98.1 %, and ERA5/MERRA-2 agree on clear-pack strength to 0.1 K)
+while under overcast the sources span a factor of 2.5: CARRA-2 keeps
+85.8 % of pack cell-times inverted, ERA5 59.8 %, MERRA-2 only 34.7 %. The
+overall detection ranking (89 / 62 / 44 % domain SBI frequency at
+80–90°N) is set
+almost entirely by how each model's boundary layer responds to cloud, not
+by the clear-sky physics; (2) **land reverses the ranking** — over the ice
+sheet ERA5 holds ~11 K and MERRA-2 ~10 K inversions where 2.5 km CARRA-2
+holds ~8 K, consistent with resolved slopes venting the katabatic basins
+that a 0.25–0.5° surface smooths flat; (3) **open water suppresses SBIs in
+all three** (≤ 6 % frequency, ≤ 2.4 K). Cloud is the largest single
+control in every source. The three also disagree on the sky itself:
+CARRA-2 classifies more of the domain-time as partial (37 %) than ERA5
+(23 %) or MERRA-2 (34 %) and less as overcast (58 vs 73 / 64 %), and
+MERRA-2 is almost never clear (1.3 % of domain-time vs ~4 % in the other
+two — its CLDTOT floor again). The stage-7 cloudy closure (below) adds a
+radiative constraint on (1): CARRA-2's overcast pack clouds carry roughly
+half ERA5's ice water path, but its radiation treats that condensate as
+*more* LW-emissive per gram than Fu optics at 25 µm, so its under-cloud
+SBI retention is not explained by radiatively weak clouds — the stable
+boundary layer itself must survive the cloud forcing.
+Caveats: the land category is mostly ice sheet standing above the
 850 hPa surface (the fixed-level dt metrics are masked there, so it is
-carried by the SBI scan), and January clear-sky is rare everywhere (~3–4 %
+carried by the SBI scan), and January clear-sky is rare everywhere (1–5 %
 of domain-time), so clear-category strengths average few cell-times.
 
 Caveat worth keeping from the sounding work: nothing above 85°N contains
@@ -650,6 +663,29 @@ expedition drifting at 85–88.6°N inside the domain (final ERA5, `expver 0001`
   libRadtran+tail from cloud-optics parameterization differences. Extending
   the simulated range from 4 µm down to ERA5's 3.08 µm edge was verified to
   matter only ~0.05 W/m².
+  **CARRA-2 cloudy is the outlier**: on its n = 500 overcast population
+  (cc ≥ 0.99 covers only 0.1 % of the 80–90°N domain at 12Z — pure thin ice
+  cloud, LWP ≤ 9, IWP 3–39 g/m²), LW↑ still closes (+0.15 W/m², r = 0.963)
+  but simulated LW↓ runs **24.5 W/m² below** CARRA-2's own flux
+  (r = +0.970, only ~6 W/m² scatter about the offset), the deficit growing
+  monotonically as the cloud thins (−12 W/m² at 40–80 g/m² total water
+  path → −39 W/m² below 5 g/m²). It is not a state-time artifact — the
+  12–13Z window, produced by the forecast initialized *from* the very 12Z
+  analysis being simulated, shows the same deficit (−27.0) as the
+  older-cycle 11–12Z window (−25.2). About half is the fixed ice radius:
+  re-running the population at r_eff 15 and 13 µm moves the bias+tail to
+  −15.3 and −12.9 W/m², and the (sublinear-in-1/r) trend extrapolates to
+  closure near 7–9 µm — below the Fu parameterization's ~12.4 µm floor,
+  but in the small-crystal range HARMONIE's temperature-dependent ice-size
+  diagnosis reaches in Arctic-winter cold. The contrast is sharp because
+  ERA5's overcast population is *also* ice-dominated (LWP median 0, IWP
+  median 38 g/m²) yet closes at +1.3 W/m² with the same 25 µm optics: per
+  archived gram of ice, CARRA-2's radiation emits substantially more LW
+  down than ERA5's. Either its diagnosed crystals really are that small,
+  or its analysis archives less condensate than its radiation used —
+  offline RT cannot separate the two, but both readings make its overcast
+  clouds radiatively opaque, which feeds the stratified interpretation
+  above.
 
 ## LW flux simulation (stage 7)
 
@@ -666,8 +702,10 @@ python src/cams_download.py --year 2020 --month 1
 python src/lrt_sim.py prep    --year 2020 --month 1 --day 1 --hour 12   # 5 clear pixels across SBI range
 python src/lrt_sim.py run     --year 2020 --month 1 --day 1 --hour 12   # uvspec thermal jobs
 python src/lrt_sim.py compare --year 2020 --month 1 --day 1 --hour 12   # table + figure
-# MERRA-2 variant (clear-sky only): add --source merra2 to the three
-# subcommands (and to rrtmg_sim.py); needs the merra2 rad dataset downloaded
+# MERRA-2 / CARRA-2 variants (clear + cloudy): add --source merra2 or
+# --source carra2 to the three subcommands (and to rrtmg_sim.py); needs
+# that source's rad dataset (and for carra2 cloudy, the cloud vars merged
+# into the day's plev file)
 
 # cloudy mode: 5 near-overcast pixels (liquid/ice/mixed/thin/thick when
 # available); ERA5 clwc/ciwc become 1D wc/ic cloud files with fixed effective
