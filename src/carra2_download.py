@@ -24,6 +24,9 @@ Examples:
     python src/carra2_download.py --year 2020 --month 1 --days 1
     python src/carra2_download.py --year 2020 --month 1 --days 1-31 --jobs 4
     python src/carra2_download.py --year 2020 --month 1 --days 1 --dry-run
+    # stage-7 inputs: per-level cloud fields into the plev files, and the
+    # forecast-stream thermal fluxes as a lwdn/lwup rad file
+    python src/carra2_download.py --year 2020 --month 1 --days 1 --datasets cloud rad
 """
 
 from __future__ import annotations
@@ -40,14 +43,36 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from era5_download import parse_days
-from reanlib.config import load_config, plev_path, sfc_path, source_area
+from reanlib.config import load_config, plev_path, rad_path, sfc_path, source_area
 from reanlib.io_carra2 import hours_in_file, normalize_carra2
 from reanlib.io_era5 import require_cds_credentials
 
-LEVEL_TYPES = {"plev": "pressure_levels", "sfc": "single_levels"}
+LEVEL_TYPES = {"plev": "pressure_levels", "sfc": "single_levels",
+               "cloud": "pressure_levels", "rad": "single_levels"}
+
+#: Stage-7 top-ups beyond the trimmed default variable set. `cloud` merges
+#: per-level cloud fields into the existing plev day file; `rad` differences
+#: the forecast-stream thermal accumulations into a lwdn/lwup rad file.
+CLOUD_CDS_VARS = ["specific_cloud_liquid_water_content",
+                  "specific_cloud_ice_water_content", "cloud_cover"]
+RAD_CDS_VARS = ["thermal_surface_radiation_downwards",
+                "surface_net_thermal_radiation"]
+RAD_LEADTIMES_H = (1, 2, 3)
 
 #: CARRA-2 analyses run 3-hourly; other hours exist only in the forecast stream.
 ANALYSIS_STEP_H = 3
+
+
+def rad_cycles_for(hours: list[int]) -> list[int]:
+    """Forecast cycles whose 1-h windows bracket the analysis ``hours``.
+
+    The window ending at H comes from cycle H-3 (lead 3) and the one ending
+    H+1 from cycle H (lead 1). Hour 0's leading window would need the
+    previous day's 21 UTC cycle; requests never span days here, so 0 UTC gets
+    only its trailing window (fluxes.load_surface_lw averages what exists).
+    """
+    return sorted({h - ANALYSIS_STEP_H for h in hours if h >= ANALYSIS_STEP_H}
+                  | set(hours))
 
 
 def build_request(cfg: dict, kind: str, dates: list[dt.date], hours: list[int],
@@ -62,19 +87,24 @@ def build_request(cfg: dict, kind: str, dates: list[dt.date], hours: list[int],
     if len(months) != 1:
         raise ValueError(f"a request must stay within one month, got {sorted(months)}")
     c2 = cfg["carra2"]
+    variables = {"plev": c2["plev_variables"], "sfc": c2["sfc_variables"],
+                 "cloud": CLOUD_CDS_VARS, "rad": RAD_CDS_VARS}[kind]
     request = {
         "level_type": LEVEL_TYPES[kind],
-        "product_type": "analysis",
-        "variable": c2["plev_variables"] if kind == "plev" else c2["sfc_variables"],
+        "product_type": "forecast" if kind == "rad" else "analysis",
+        "variable": variables,
         "year": [f"{dates[0].year:04d}"],
         "month": [f"{dates[0].month:02d}"],
         "day": [f"{d.day:02d}" for d in dates],
-        "time": [f"{h:02d}:00" for h in hours],
+        "time": [f"{h:02d}:00" for h in
+                 (rad_cycles_for(hours) if kind == "rad" else hours)],
         "data_format": "netcdf",
         "area": area,
     }
-    if kind == "plev":
+    if kind in ("plev", "cloud"):
         request["level_location"] = [str(p) for p in c2["pressure_levels"]]
+    if kind == "rad":
+        request["leadtime_hour"] = [str(h) for h in RAD_LEADTIMES_H]
     return request
 
 
@@ -99,7 +129,10 @@ def chunk_days_for(cfg: dict, kind: str, override: int | None = None) -> int:
         return int(override)
     value = cfg["carra2"].get("chunk_days", 12)
     if isinstance(value, dict):
-        return int(value.get(kind, 12))
+        # cloud is 3 profile variables against the trimmed default's 2, so
+        # its per-day cost is 1.5x plev's; rad is a handful of 2-D fields
+        fallback = {"cloud": 8, "rad": 31}.get(kind, 12)
+        return int(value.get(kind, fallback))
     return int(value)
 
 
@@ -180,17 +213,54 @@ def _merge_existing(out, target: Path):
     return merged, status
 
 
+def _merge_cloud(day, target: Path):
+    """Attach normalized cloud variables to the existing plev day file.
+
+    The plev file must already exist (the cloud kind is a top-up, not a
+    standalone product) and sit on the identical grid, times and levels —
+    anything else would let xarray align-and-NaN silently.
+    """
+    import numpy as np
+    import xarray as xr
+
+    if not target.exists():
+        raise FileNotFoundError(f"{target} does not exist — download the plev "
+                                "day first; `cloud` only tops it up")
+    with xr.open_dataset(target) as handle:
+        old = handle.load()
+    for coord in ("valid_time", "pressure_level", "x", "y"):
+        if coord not in old.coords or coord not in day.coords:
+            raise KeyError(f"coordinate {coord} missing while merging cloud vars")
+        a, b = old[coord].values, day[coord].values
+        same = (a.shape == b.shape
+                and (np.array_equal(a, b) if a.dtype.kind == "M"
+                     else np.allclose(a.astype(float), b.astype(float))))
+        if not same:
+            raise ValueError(f"{coord} of the cloud delivery does not match "
+                             f"{target} — cannot merge")
+    for v in ("clwc", "ciwc", "cc"):
+        if v in day:
+            old[v] = day[v]
+    return old, "cloud vars merged into plev"
+
+
 def write_normalized_chunk(raw: Path, kind: str, cfg: dict, area: list[float],
                            dates: list[dt.date]) -> dict[dt.date, str]:
     """Normalize a multi-day delivery and split it into one file per day."""
     import numpy as np
     import pandas as pd
 
-    from reanlib.io_carra2 import _standardize_names
+    from reanlib.io_carra2 import _standardize_names, normalize_carra2_rad
 
-    ds = _standardize_names(open_delivery(raw))
-    path_fn = plev_path if kind == "plev" else sfc_path
-    stamps = pd.DatetimeIndex(ds["valid_time"].values)
+    ds = open_delivery(raw)
+    if kind != "rad":
+        # the rad (forecast) layout keeps time (cycle) x step; its
+        # normalizer does its own renaming
+        ds = _standardize_names(ds)
+    time_name = "time" if (kind == "rad" and "time" in ds.dims) else "valid_time"
+    path_fn = {"plev": plev_path, "sfc": sfc_path,
+               "cloud": plev_path, "rad": rad_path}[kind]
+    stamps = pd.DatetimeIndex(ds[time_name].values)
     results: dict[dt.date, str] = {}
     try:
         for date in dates:
@@ -200,10 +270,18 @@ def write_normalized_chunk(raw: Path, kind: str, cfg: dict, area: list[float],
                 continue
             # one day at a time: a whole plev chunk is ~63 GB decompressed on
             # the full CARRA-2 mesh, so it must never be materialized at once
-            day = normalize_carra2(ds.isel(valid_time=idx), kind, cfg, area=area)
+            sel = ds.isel({time_name: idx})
+            if kind == "rad":
+                day = normalize_carra2_rad(sel, cfg, area=area)
+            else:
+                day = normalize_carra2(sel, "cloud" if kind == "cloud" else kind,
+                                       cfg, area=area)
             target = path_fn(cfg, date)
             target.parent.mkdir(parents=True, exist_ok=True)
-            out, status = _merge_existing(day.load(), target)
+            if kind == "cloud":
+                out, status = _merge_cloud(day.load(), target)
+            else:
+                out, status = _merge_existing(day.load(), target)
             tmp_nc = target.with_suffix(".nc.norm")
             out.to_netcdf(tmp_nc, encoding={v: {"zlib": True, "complevel": 4}
                                             for v in out.data_vars})
@@ -212,6 +290,19 @@ def write_normalized_chunk(raw: Path, kind: str, cfg: dict, area: list[float],
     finally:
         ds.close()
     return results
+
+
+def _has_cloud_vars(path: Path) -> bool:
+    """True if the plev day file already carries the cloud fields."""
+    import xarray as xr
+
+    if not Path(path).exists():
+        return False
+    try:
+        with xr.open_dataset(path) as ds:
+            return {"clwc", "ciwc", "cc"} <= set(ds.data_vars)
+    except Exception:
+        return False
 
 
 def download_chunk(kind: str, cfg: dict, dates: list[dt.date], hours: list[int],
@@ -225,10 +316,22 @@ def download_chunk(kind: str, cfg: dict, dates: list[dt.date], hours: list[int],
     Runs in its own process (see ``main``), so the CDS client it builds shares
     no socket state with any other worker.
     """
-    path_fn = plev_path if kind == "plev" else sfc_path
-    want = set(hours)
-    todo = [d for d in dates
-            if force or not (want <= hours_in_file(path_fn(cfg, d), d))]
+    path_fn = {"plev": plev_path, "sfc": sfc_path,
+               "cloud": plev_path, "rad": rad_path}[kind]
+    if kind == "rad":
+        # completeness = both bracketing window ends per analysis hour (hour 0
+        # lacks its leading window without the previous day's cycle; see
+        # rad_cycles_for)
+        want = {h + 1 for h in hours} | {h for h in hours if h >= ANALYSIS_STEP_H}
+    else:
+        want = set(hours)
+    def complete(d: dt.date) -> bool:
+        if not (want <= hours_in_file(path_fn(cfg, d), d)):
+            return False
+        if kind == "cloud":
+            return _has_cloud_vars(path_fn(cfg, d))
+        return True
+    todo = [d for d in dates if force or not complete(d)]
     skipped = {d: "skipped" for d in dates if d not in todo}
     if not todo:
         return skipped
@@ -271,8 +374,14 @@ def main(argv: list[str] | None = None) -> int:
                              "(default from config)")
     parser.add_argument("--area", type=float, nargs=4, default=None,
                         metavar=("N", "W", "S", "E"), help="override config area")
-    parser.add_argument("--datasets", nargs="+", choices=["plev", "sfc"],
-                        default=["plev", "sfc"])
+    parser.add_argument("--datasets", nargs="+",
+                        choices=["plev", "sfc", "cloud", "rad"],
+                        default=["plev", "sfc"],
+                        help="plev/sfc are the stage 1-6 defaults; `cloud` "
+                             "tops the plev day files up with clwc/ciwc/cc "
+                             "and `rad` builds the lwdn/lwup flux-window "
+                             "files from the forecast stream (both are "
+                             "stage-7 inputs)")
     parser.add_argument("--config", default=None, help="path to config.yaml")
     parser.add_argument("--chunk-days", type=int, default=None,
                         help="days bundled into ONE CDS request (default from "

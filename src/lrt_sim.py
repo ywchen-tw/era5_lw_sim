@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reanlib.config import (REPO_ROOT, figures_dir, inversion_path, load_config,
                             plev_path, sfc_path, source_label)
 from reanlib.fluxes import load_cldtot, load_surface_lw
+from reanlib.grid import GridIndex, domain_mask, hdims, latlon2d
 from reanlib.inversion import column_heights
 from reanlib.io_era5 import open_era5
 
@@ -195,11 +196,32 @@ def sample_pixels(mask: np.ndarray, n: int, seed: int):
 
 
 def read_afglsw_above(p_top_hpa: float, z_top_km: float) -> np.ndarray:
-    """Rows (9 col) of the subarctic-winter standard atmosphere above ERA5's top."""
+    """Rows (9 col) of the subarctic-winter standard atmosphere above the
+    profile top (1 hPa for ERA5, 0.1 for MERRA-2, 50 for CARRA-2)."""
     path = Path(LIBRADTRAN_DIR) / "data" / "atmmod" / "afglsw.dat"
     rows = np.loadtxt(str(path), comments="#")
     keep = (rows[:, 1] < 0.9 * p_top_hpa) & (rows[:, 0] > z_top_km + 2.0)
     return rows[keep]   # afglsw is TOA-first already
+
+
+def afglsw_o3_mmr(p_hpa: np.ndarray) -> np.ndarray:
+    """Subarctic-winter climatological ozone [kg/kg] on the given pressures.
+
+    For sources that publish no ozone field (CARRA-2): the o3/air number
+    densities of afglsw give a volume mixing ratio, interpolated in log-p.
+    The column then uses climatology below the profile top and the same
+    standard atmosphere above it, so the ozone description is seamless —
+    just not the reanalysis's own.
+    """
+    path = Path(LIBRADTRAN_DIR) / "data" / "atmmod" / "afglsw.dat"
+    rows = np.loadtxt(str(path), comments="#")
+    # afglsw is TOA-first, so pressure is already ascending down the rows —
+    # exactly the ordering np.interp needs
+    p_ref = rows[:, 1]
+    vmr_ref = rows[:, 4] / rows[:, 3]           # o3 / air number density
+    vmr = np.interp(np.log(np.asarray(p_hpa, dtype=float)),
+                    np.log(p_ref), vmr_ref)
+    return vmr * (M_O3 / M_DRY)
 
 
 def build_profile_files(out_dir: Path, label: str, p_hpa, T, q, o3_mmr,
@@ -273,11 +295,11 @@ def cmd_prep(args) -> int:
         sfc = open_era5(sfc_path(cfg, date)).sel(valid_time=when)
         inv = open_era5(inversion_path(cfg, date)).sel(valid_time=when)
     except KeyError:
-        dl = "era5_download.py" if cfg["source"] == "era5" else "merra2_download.py"
+        dl = f"{cfg['source']}_download.py"
         sys.exit(f"{when} missing from the {lab}/inversion files — download it "
                  f"({dl} --hours {args.hour}) and recompute the "
                  f"day's inversions (daily_inversion.py --overwrite) first")
-    plev = plev.transpose("pressure_level", "latitude", "longitude")
+    plev = plev.transpose("pressure_level", *hdims(plev))
 
     p = plev["pressure_level"].values.astype(float)          # descending
     sp_hpa = sfc["sp"].values / 100.0
@@ -288,6 +310,11 @@ def cmd_prep(args) -> int:
     # screening surrogate — same thresholds as ERA5's per-level cc_max.
     if "cc" in plev:
         cc_max = plev["cc"].max("pressure_level").values
+    elif cfg["source"] == "carra2":
+        sys.exit("the CARRA-2 plev file for this day has no cloud fields "
+                 "(the default download trims them) — top it up with: "
+                 f"python src/carra2_download.py --year {args.year} "
+                 f"--month {args.month} --days {args.day} --datasets cloud")
     else:
         cc_max = load_cldtot(cfg, date, when)
     # nan_to_num: MERRA-2 masks below-ground/marginal levels (no condensate there)
@@ -300,19 +327,16 @@ def cmd_prep(args) -> int:
 
     strength = np.nan_to_num(inv["sbi_strength"].values)
     found = inv["sbi_found"].values.astype(bool)
-    lat2d, lon2d = np.meshgrid(inv["latitude"].values, inv["longitude"].values,
-                               indexing="ij")
+    lat2d, lon2d = latlon2d(inv)
+    in_domain = domain_mask(inv)      # all-True on the global sources
 
     if args.pixels_from:
         # reuse the exact pixel set of an earlier manifest (state-time tests:
         # same columns at another hour, whatever their cloud state now — the
         # per-pixel cc/lwp/iwp recorded below lets analyses filter later)
         ref = json.loads(Path(args.pixels_from).read_text())
-        lats = plev["latitude"].values
-        lons = plev["longitude"].values
-        picks = [(rp["label"],
-                  (int(np.argmin(np.abs(lats - rp["lat"]))),
-                   int(np.argmin(np.abs(lons - rp["lon"])))))
+        gi = GridIndex(plev)
+        picks = [(rp["label"], gi.query(rp["lat"], rp["lon"])[0])
                  for rp in ref["profiles"]]
         print(f"reusing {len(picks)} pixel locations from {args.pixels_from} "
               f"(snapshot {ref['snapshot']})")
@@ -322,7 +346,7 @@ def cmd_prep(args) -> int:
         # everywhere), so without per-level cc screen on condensate alone —
         # <= 0.01 g/m2 is radiatively negligible whatever the fraction.
         clear = (((cc_max <= 0.01) & (lwp_g + iwp_g <= 1.0)) if "cc" in plev
-                 else (lwp_g + iwp_g <= 0.01)) & (sp_hpa >= 1000.0)
+                 else (lwp_g + iwp_g <= 0.01)) & (sp_hpa >= 1000.0) & in_domain
         print(f"clear-sky pixels: {clear.sum()} / {clear.size} "
               f"({clear.mean():.1%} of the domain)")
         if clear.sum() < args.n:
@@ -355,7 +379,8 @@ def cmd_prep(args) -> int:
     else:
         # cloudy: near-overcast columns so the plane-parallel (cloud fraction 1)
         # simulation matches the all-sky flux as closely as possible
-        overcast = (cc_max >= 0.99) & (sp_hpa >= 1000.0) & (lwp_g + iwp_g > 1.0)
+        overcast = ((cc_max >= 0.99) & (sp_hpa >= 1000.0)
+                    & (lwp_g + iwp_g > 1.0) & in_domain)
         print(f"overcast pixels: {overcast.sum()} / {overcast.size} "
               f"({overcast.mean():.1%} of the domain)")
         if overcast.sum() < args.n:
@@ -383,11 +408,14 @@ def cmd_prep(args) -> int:
         t2m = float(sfc["t2m"].values[iy, ix])
         p_col = p[above]
         t_col = plev["t"].values[above, iy, ix].astype(float)
+        # CARRA-2 publishes no ozone at all; fall back to the subarctic-winter
+        # climatology so the profile stays consistent with the splice above it
+        o3_col = (plev["o3"].values[above, iy, ix].astype(float)
+                  if "o3" in plev else afglsw_o3_mmr(p_col))
         atm_file, ch4_file, keep, z_col = build_profile_files(
             out_dir, flabel, p_col, t_col,
             plev["q"].values[above, iy, ix].astype(float),
-            plev["o3"].values[above, iy, ix].astype(float),
-            t2m, float(sp_hpa[iy, ix]), cams)
+            o3_col, t2m, float(sp_hpa[iy, ix]), cams)
         ref_dn = float(ref_dn2d[iy, ix])
         ref_up = float(ref_up2d[iy, ix])
         prof = {
@@ -877,7 +905,7 @@ def main(argv: "list[str] | None" = None) -> int:
     common.add_argument("--sky", default="clear", choices=["clear", "cloudy"],
                         help="clear: cloud-free pixels; cloudy: near-overcast "
                              "pixels with ERA5 clwc/ciwc as wc/ic cloud files")
-    common.add_argument("--source", choices=["era5", "merra2"], default=None,
+    common.add_argument("--source", choices=["era5", "merra2", "carra2"], default=None,
                         help="data source (default from config.yaml)")
     common.add_argument("--config", default=None)
 

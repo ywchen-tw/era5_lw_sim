@@ -188,10 +188,11 @@ def sfc_path(cfg: dict, date: dt.date) -> Path:
 
 
 def rad_path(cfg: dict, date: dt.date) -> Path:
-    """Surface-radiation daily file (MERRA-2 only; ERA5 radiation lives in
-    the sfc file as strd/str accumulations)."""
-    if cfg["source"] != "merra2":
-        raise ValueError("rad_path is MERRA-2-only; ERA5 radiation is in sfc_path")
+    """Surface-radiation daily file (MERRA-2 M2T1NXRAD, or CARRA-2's
+    differenced forecast-stream fluxes; ERA5 radiation lives in the sfc file
+    as strd/str accumulations)."""
+    if cfg["source"] not in ("merra2", "carra2"):
+        raise ValueError("rad_path is for merra2/carra2; ERA5 radiation is in sfc_path")
     return _day_dir(cfg, "data", date) / f"{cfg['source']}_rad_{date:%Y%m%d}.nc"
 
 

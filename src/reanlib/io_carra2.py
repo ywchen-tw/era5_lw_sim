@@ -12,13 +12,21 @@ layouts through ``reanlib.grid`` rather than assuming 1-D lat/lon.
 Two further differences from the global sources are handled here:
 
 * **No specific humidity on pressure levels.** CARRA-2 publishes relative
-  humidity only, so ``q`` is derived with ``specific_humidity_from_rh``.
-  CARRA documents its relative humidity against saturation over *water*
-  (config ``carra2.rh_over``).
+  humidity only, so ``q`` is derived with ``specific_humidity_from_rh``
+  (config ``carra2.rh_over``, default water). NOTE the pressure-level r was
+  shown empirically to follow the model's temperature-dependent saturation
+  (ice-like for T below about -25 C, water-like above; see PLAN_TODO), while
+  the CARRA docs define only the 2 m RH (over water) and are silent for
+  pressure levels. With the over-water default, derived q above ~750 hPa is
+  biased high by construction, up to the e_w/e_i factor (~1.5 at 300 hPa).
 * **The profile top is 50 hPa**, against 1 hPa for ERA5 and 0.1 hPa for
   MERRA-2. That is far above the inversion scan's 500 hPa limit and so does
-  not affect stages 2-6, but any radiative-transfer use would have to splice
-  a standard atmosphere from 50 hPa upward instead of from 1 hPa.
+  not affect stages 2-6; stage 7 splices the standard atmosphere from 50 hPa
+  upward instead of from 1 hPa.
+* **Surface radiation is forecast-stream only** (accumulated J m-2 from each
+  3-hourly cycle start). ``normalize_carra2_rad`` differences consecutive
+  lead times into 1-h mean W m-2 windows stamped at the window END, matching
+  the ERA5 convention that stage 7 reads.
 """
 
 from __future__ import annotations
@@ -47,13 +55,16 @@ PROJ_GRID_SPACING = 2500.0      # m, for the regularity check
 # (relative humidity) is converted to 'q' during normalization, not renamed.
 PLEV_VARS = ("t", "r", "clwc", "ciwc", "cc")
 SFC_VARS = ("t2m", "skt", "sp", "lsm")
+CLOUD_VARS = ("clwc", "ciwc", "cc")   # stage-7 top-up of a trimmed plev file
+RAD_VARS = ("str", "strd")            # forecast stream, accumulated J m-2
 # Everything the inversion metrics actually need is mandatory; the rest is
 # accepted when present and skipped when the config does not request it, so
 # `carra2.plev_variables` can be trimmed to shrink a download without
 # breaking normalization. Stages 1-6 read only t and q (from r), plus
-# t2m/skt/sp -- the cloud fields and lsm are for future radiative-transfer work.
+# t2m/skt/sp -- the cloud fields and lsm are for radiative-transfer work
+# (stage 7), which fetches them separately via the `cloud` kind.
 OPTIONAL_VARS = frozenset({"clwc", "ciwc", "cc", "lsm"})
-KIND_VARS = {"plev": PLEV_VARS, "sfc": SFC_VARS}
+KIND_VARS = {"plev": PLEV_VARS, "sfc": SFC_VARS, "cloud": CLOUD_VARS}
 
 # CDS deliveries have used several coordinate spellings; map them all.
 COORD_ALIASES = {
@@ -74,6 +85,8 @@ VAR_ALIASES = {
     "ciwc": "ciwc", "specific_cloud_ice_water_content": "ciwc",
     "cc": "cc", "cloud_cover": "cc",
     "lsm": "lsm", "land_sea_mask": "lsm",
+    "str": "str", "surface_net_thermal_radiation": "str",
+    "strd": "strd", "thermal_surface_radiation_downwards": "strd",
 }
 
 
@@ -184,9 +197,9 @@ def normalize_carra2(ds: xr.Dataset, kind: str, cfg: dict | None = None,
 
     wanted = KIND_VARS[kind]
     missing = [v for v in wanted if v not in ds and v not in OPTIONAL_VARS]
-    if missing:
-        raise KeyError(f"CARRA-2 {kind} delivery is missing variable(s) {missing}; "
-                       f"got {sorted(ds.data_vars)}")
+    if missing or not any(v in ds for v in wanted):
+        raise KeyError(f"CARRA-2 {kind} delivery is missing variable(s) "
+                       f"{missing or list(wanted)}; got {sorted(ds.data_vars)}")
     ds = ds[[v for v in wanted if v in ds]]
 
     for coord in ("latitude", "longitude"):
@@ -208,17 +221,19 @@ def normalize_carra2(ds: xr.Dataset, kind: str, cfg: dict | None = None,
     if "pressure_level" in ds.dims:
         ds["pressure_level"] = ds["pressure_level"].astype(float)
         ds = ds.sortby("pressure_level", ascending=False)
-        # q from relative humidity: CARRA-2 has no specific humidity field
-        p_pa = ds["pressure_level"] * 100.0
-        ds["q"] = specific_humidity_from_rh(ds["r"], ds["t"], p_pa, rh_over)
-        ds["q"].attrs = {
-            "units": "kg kg**-1",
-            "long_name": "specific humidity",
-            "comment": (f"derived from CARRA-2 relative humidity (saturation over "
-                        f"{rh_over}); CARRA-2 publishes no specific humidity on "
-                        "pressure levels"),
-        }
-        ds = ds.drop_vars("r")
+        # q from relative humidity: CARRA-2 has no specific humidity field.
+        # (the `cloud` kind carries no r, so nothing to derive there)
+        if "r" in ds:
+            p_pa = ds["pressure_level"] * 100.0
+            ds["q"] = specific_humidity_from_rh(ds["r"], ds["t"], p_pa, rh_over)
+            ds["q"].attrs = {
+                "units": "kg kg**-1",
+                "long_name": "specific humidity",
+                "comment": (f"derived from CARRA-2 relative humidity (saturation over "
+                            f"{rh_over}); CARRA-2 publishes no specific humidity on "
+                            "pressure levels"),
+            }
+            ds = ds.drop_vars("r")
         # cloud cover is delivered in %, ERA5's cc is a 0-1 fraction
         if "cc" in ds and float(np.nanmax(ds["cc"].values)) > 1.5:
             ds["cc"] = ds["cc"] / 100.0
@@ -234,6 +249,114 @@ def normalize_carra2(ds: xr.Dataset, kind: str, cfg: dict | None = None,
         "rh_over": rh_over,
     }
     return ds
+
+
+def normalize_carra2_rad(ds: xr.Dataset, cfg: dict | None = None,
+                         *, area: list[float] | None = None) -> xr.Dataset:
+    """Normalize a CARRA-2 forecast-radiation delivery to 1-h flux windows.
+
+    CARRA-2 has no radiation in the analysis stream: ``str``/``strd`` exist
+    only as forecasts, accumulated J m-2 from each cycle start. Consecutive
+    lead times are differenced into per-window mean fluxes and stamped at the
+    window END (``valid_time = cycle + lead``), which is ERA5's convention
+    ("accumulation over the hour ending at valid_time") — so stage 7 can read
+    either source the same way. Output variables are ``lwdn``/``lwup`` in
+    W m-2 (already divided by the window length; LWup = LWdn - net), with
+    ``cycle_time`` and ``lead_h`` kept as provenance coordinates.
+
+    Duplicate window ends (two cycles covering the same hour) keep the
+    shorter lead, which sits closer to its initializing analysis.
+    """
+    # the analysis-oriented time->valid_time swap in _standardize_names must
+    # not run here: in the forecast layout valid_time is 2-D (time, step)
+    renames = {k: v for k, v in VAR_ALIASES.items()
+               if k in ds.data_vars and k != v and v not in ds.data_vars}
+    renames.update({k: v for k, v in
+                    {"forecast_reference_time": "time", "forecast_period": "step",
+                     "lat": "latitude", "lon": "longitude"}.items()
+                    if (k in ds.coords or k in ds.dims) and v not in ds.dims
+                    and v not in ds.coords})
+    ds = ds.rename(renames) if renames else ds
+    missing = [v for v in RAD_VARS if v not in ds]
+    if missing:
+        raise KeyError(f"CARRA-2 rad delivery is missing variable(s) {missing}; "
+                       f"got {sorted(ds.data_vars)}")
+    ds = ds[list(RAD_VARS)]
+    for dim in ("time", "step"):     # single-cycle/-lead deliveries drop dims
+        if dim not in ds.dims:
+            ds = ds.expand_dims(dim)
+
+    # clip before any arithmetic, exactly as normalize_carra2 does
+    if area is not None:
+        ds = clip_to_area(ds, area)
+
+    step = ds["step"].values
+    step_h = (step / np.timedelta64(1, "h") if np.issubdtype(step.dtype, np.timedelta64)
+              else step.astype(float))
+    order = np.argsort(step_h)
+    ds = ds.isel(step=order)
+    step_h = step_h[order]
+    if step_h[0] <= 0:
+        raise ValueError(f"lead times must be positive, got {step_h}")
+    window_h = np.diff(np.concatenate([[0.0], step_h]))
+
+    cycles = ds["time"].values
+    ny, nx = ds.sizes["y"], ds.sizes["x"]
+    flux = {}
+    for v in RAD_VARS:
+        acc = ds[v].transpose("time", "step", "y", "x").values.astype(float)
+        w = np.empty_like(acc)
+        w[:, 0] = acc[:, 0] / (window_h[0] * 3600.0)
+        if step_h.size > 1:
+            w[:, 1:] = np.diff(acc, axis=1) / (window_h[1:, None, None] * 3600.0)
+        flux[v] = w.reshape(-1, ny, nx)
+
+    vt = (cycles[:, None] + (step_h[None, :] * 3600.0e9).astype("timedelta64[ns]")
+          ).reshape(-1)
+    cyc_flat = np.repeat(cycles, step_h.size)
+    lead_flat = np.tile(step_h, cycles.size)
+    win_flat = np.tile(window_h, cycles.size)
+
+    # sort by window end; on ties (overlapping cycles) keep the shortest lead
+    order = np.lexsort((lead_flat, vt))
+    _, first = np.unique(vt[order], return_index=True)
+    keep = order[first]
+
+    lwdn = flux["strd"][keep]
+    lwup = lwdn - flux["str"][keep]
+    out = xr.Dataset(
+        {
+            "lwdn": (("valid_time", "y", "x"), lwdn),
+            "lwup": (("valid_time", "y", "x"), lwup),
+        },
+        coords={
+            "valid_time": vt[keep],
+            "cycle_time": (("valid_time",), cyc_flat[keep]),
+            "lead_h": (("valid_time",), lead_flat[keep]),
+            "window_h": (("valid_time",), win_flat[keep]),
+            **{c: ds[c] for c in ("latitude", "longitude", "y", "x")
+               if c in ds.coords},
+        },
+    )
+    if "domain_mask" in ds:
+        out["domain_mask"] = ds["domain_mask"]
+    for name, long in (("lwdn", "surface LW down"), ("lwup", "surface LW up")):
+        out[name].attrs = {
+            "units": "W m**-2",
+            "long_name": f"{long}, mean over the window ending at valid_time",
+            "comment": ("differenced CARRA-2 forecast accumulations (str/strd, "
+                        "J m-2 from cycle start); LWup = LWdn - net"),
+        }
+    out = _projection_coords(out)
+    out.attrs = {
+        "source": ("CARRA-2 forecast-stream surface thermal radiation "
+                   "(reanalysis-pan-carra, product_type forecast), via CDS"),
+        "expver_values": "n/a (CARRA-2)",
+        "grid": "north polar stereographic, 2.5 km",
+        "note": ("1-h (window_h) mean fluxes stamped at the window END, ERA5 "
+                 "convention; on duplicate window ends the shorter lead wins"),
+    }
+    return out
 
 
 def clip_to_area(ds: xr.Dataset, area: list[float]) -> xr.Dataset:

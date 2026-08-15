@@ -158,7 +158,8 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--day", type=int, required=True)
     parser.add_argument("--hour", type=int, required=True)
     parser.add_argument("--sky", default="clear", choices=["clear", "cloudy"])
-    parser.add_argument("--source", choices=["era5", "merra2"], default=None,
+    parser.add_argument("--source", choices=["era5", "merra2", "carra2"],
+                        default=None,
                         help="data source (default from config.yaml)")
     parser.add_argument("--config", default=None)
     args = parser.parse_args(argv)
