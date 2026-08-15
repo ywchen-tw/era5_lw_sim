@@ -119,19 +119,39 @@ the README. Update this file when a stage lands or a plan changes.
       11-11.4 K. Shares of domain-time: cloudy-pack 52 %, all-clear
       categories together only ~3 % — January 2020 was overcast (consistent
       with stage 7's 0.6-11 % clear-pixel screens).
-- [ ] **CARRA-2 at 80-90N** — IN PROGRESS: config widened (area + the three
-      classification sfc variables, names validated against the CDS costing
-      endpoint; measured cost does NOT scale with area — plev 960/day either
-      way, so chunking stays 12 d) and the forced re-download of January is
-      queued (3 plev + 1 sfc requests). On arrival, normalization REPLACES
-      the 85-90N day files ("grid changed"), which also drops day 1's merged
-      cloud fields — re-fetch `--datasets cloud rad` at 80-90N before any
-      stage-7 rerun. Then: recompute dailies (with classes), monthlies, and
-      the `--area 90 -180 85 180` tagged files, verifying they reproduce the
-      committed 85-90N numbers (92.0 % / 9.78 K); rerun stages 5-6/6b (their
-      results should be unchanged — all soundings sit at 86.7-87.6N — but
-      verify). The 85-90N raw plev chunks stay on disk as the published-r
-      archive for the humidity-convention work.
+      CARRA-2 DONE (80-90N). Cross-source structure is the payoff:
+      * CLOUDY PACK is where they diverge — CARRA-2 keeps 85.8 %/8.9 K
+        under cloud where ERA5 drops to 59.8 %/6.2 K; clear-pack detection
+        is nearly identical (98.1 vs 97.5 %, CARRA-2 +4.3 K stronger). So
+        CARRA-2's over-detection is concentrated under cloud: either its
+        clouds are less LW-opaque or its stable BL survives cloud cover —
+        separable with the stage-7 cloudy run (its LWdn under overcast).
+      * LAND REVERSES the ranking: ERA5 ~100 %/11.4 K vs CARRA-2
+        99 %/8.2 K — the 2.5 km terrain resolves slopes the 0.25-deg ice
+        sheet smooths, weakening the katabatic-basin inversions.
+      * Sky-share disagreement: CARRA-2 sees more partial (37 vs 23 %) and
+        less overcast (58 vs 73 %) domain-time than ERA5 from each's own
+        tcc.
+      MERRA-2 still pending its ocn/const/rad fetches.
+- [x] **CARRA-2 at 80-90N** — DONE and verified. January re-downloaded on
+      the full cap (3 plev + 1 sfc requests; measured cost does NOT scale
+      with area, so chunking stayed 12 d), day files now 891x892 with
+      lsm/siconc/tcc aboard. The sfc delivery exposed two more
+      form-vs-delivery gaps, both fixed and committed: sea-ice fraction
+      ships on its own 2880x2880 canvas (same origin; `open_delivery` crops
+      members to the common frame, verifies latitudes cell-for-cell, and the
+      zip path is now lazy — 6 vars x 124 steps would have materialized
+      ~25 GB) and tcc arrives 0-100 like cc (percent guard now
+      kind-agnostic). VERIFICATION all green: the `--area 90 -180 85 180`
+      tagged file reproduces the committed 92.0 % / 9.78 K exactly, and
+      stages 6/6b reproduce every committed number on the new files
+      (strength +2.69 K r=+0.36, depth +398 m, t2m −0.79 K; per-level table
+      identical). Full-domain CARRA-2 means are now 89.0 % / 9.39 K (the
+      80-85N band adds open water and marginal ice). Remaining consequences:
+      stage-5 PCA not yet rerun on the wider domain (committed EOFs
+      72.8/13.9 % remain documented as 85-90N); day-1 cloud/rad re-fetch at
+      80-90N queued for stage-7 continuity. The 85-90N raw plev chunks stay
+      on disk as the published-r archive for the humidity-convention work.
 - [ ] **CURC fine-grid stage-8 run** — local `reptran coarse` (~15 cm⁻¹)
       under-resolves far-IR channels (3–9 cm⁻¹ wide); science-grade BT and
       K need `reptran fine` on CURC (`slurm/curc_prefire_bt.sh`; NEVER

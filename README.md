@@ -455,9 +455,45 @@ central pack. The profile PCA is stable across all three (EOF1 66–74 %), so
 the vertical structure decomposes almost identically even where the surface
 climate does not.
 
-Caveat worth keeping: the CARRA-2 column covers 85–90°N pack ice only.
-Nothing here compares the sources over Greenland or the ice edge, which is
-where 2.5 km would be expected to matter most.
+### Stratified statistics: (clear / partial / cloudy) × surface type
+
+`daily_inversion.py` classifies every (analysis instant, cell) once the
+classification fields are downloaded — surface type from `lsm` (land ≥ 0.5)
+and sea-ice fraction (open < 5 %, pack > 95 %, marginal between), sky from
+total cloud cover (clear ≤ 5 %, cloudy ≥ 95 %; the clear threshold is 5 %
+rather than stage 7's 1 % because MERRA-2's CLDTOT never reaches 1 %) — and
+`monthly_stats.py` pools area-weighted statistics over cell-times per
+category (`strat_*` variables plus a printed table with counts and
+domain-time shares).
+
+January 2020, 80–90°N, SBI frequency / conditional strength:
+
+| | clear pack | cloudy pack | clear land | cloudy land | open water (cloudy) |
+|---|---|---|---|---|---|
+| ERA5 | 97.5 % / 8.3 K | 59.8 % / 6.2 K | 100 % / 11.2 K | 92.7 % / 9.3 K | 0.4 % / 1.1 K |
+| CARRA-2 | 98.1 % / 12.6 K | 85.8 % / 8.9 K | 99.8 % / 8.3 K | 87.8 % / 6.7 K | 6.2 % / 1.6 K |
+
+Three structural results: (1) **the ERA5–CARRA-2 disagreement lives under
+cloud** — clear-sky pack-ice detection is nearly identical (97.5 vs 98.1 %)
+while under overcast ERA5 loses 38 points of SBI frequency and CARRA-2 only
+12, so CARRA-2's over-detection (92 % overall vs 67.5 % observed at MOSAiC)
+is specifically a cloudy-sky behaviour — either its clouds are less
+LW-opaque or its stable boundary layer survives cloud cover; (2) **land
+reverses the ranking** — over the ice sheet ERA5 holds ~11 K inversions
+where 2.5 km CARRA-2 holds ~8 K, consistent with resolved slopes venting
+the katabatic basins that a 0.25° surface smooths flat; (3) **open water
+suppresses SBIs in both** (≤ 6 % frequency, ≤ 2.4 K). Cloud is the largest
+single control in every source. The two also disagree on the sky itself:
+CARRA-2 classifies more of the domain-time as partial (37 vs 23 %) and less
+as overcast (58 vs 73 %). MERRA-2 joins when its classification fetches
+land. Caveats: the land category is mostly ice sheet standing above the
+850 hPa surface (the fixed-level dt metrics are masked there, so it is
+carried by the SBI scan), and January clear-sky is rare everywhere (~3–4 %
+of domain-time), so clear-category strengths average few cell-times.
+
+Caveat worth keeping from the sounding work: nothing above 85°N contains
+land or open water — those categories live entirely in the 80–85°N band
+that the CARRA-2 re-download added.
 
 ### Profile comparison (stage 6b)
 
