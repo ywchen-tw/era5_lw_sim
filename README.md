@@ -311,6 +311,7 @@ python src/mosaic_profiles.py --year 2020 --month 1 --report
 | `sbi_strength` | T(inversion top) − T(2 m), profile scan from the surface |
 | `sbi_top_p`, `sbi_depth_p`, `sbi_depth_z` | SBI top pressure and depth (hPa / approx. m) |
 | `dt_850_2m` | T(850 hPa) − T(2 m) |
+| `dt_850_skt` | T(850 hPa) − T(skin) |
 | `dt_925_1000` | T(925 hPa) − T(1000 hPa) |
 
 **Surface-based inversion (SBI), profile scan.** The temperature profile is
@@ -322,6 +323,22 @@ spacing of ERA5, one tolerated level is roughly analogous to the 100 m
 embedded-layer rule used with radiosondes. Strength = T(top) − T(2 m).
 Below-ground pressure levels (p > surface pressure; ERA5 extrapolates them)
 are excluded from the scan.
+
+**`dt_850_skt`** is `dt_850_2m` referenced to the skin temperature instead of
+the 2 m diagnostic. Over winter sea ice the two surfaces are not
+interchangeable: the 2 m value is a diagnostic interpolation between the skin
+and the lowest model level, and the MOSAiC comparison shows the global
+reanalyses' ~+3 K warm-surface bias lives in exactly that diagnostic. The
+skin-referenced variant brackets the surface-coupling uncertainty from the
+other side — while being *more* model-dependent, since the skin temperature
+is a pure surface-energy-balance product with no observational counterpart in
+the radiosondes (which is why stage 6 does not score it against MOSAiC).
+January 2020, 85–90°N: the skin−2m offset even differs in sign between the
+global sources — ERA5's skin is 0.3 K colder than its 2 m (T850−Tskin +4.10
+vs T850−T2m +3.81 K), MERRA-2's is 0.6 K warmer (+1.86 vs +2.47 K), and
+CARRA-2 holds the two within 0.03 K (+7.92 vs +7.89 K) — so the spread
+between sources in surface-referenced inversion strength *widens* when the
+skin is used, from 5.4 K to 6.1 K.
 
 An inversion is only counted when its strength is **≥ 0.5 K**
 (`sbi.min_strength_k`); weaker cases are reported as "no SBI" (NaN,
@@ -424,6 +441,7 @@ checks the mask):
 | unconditional strength | 3.90 K | 3.13 K | 9.04 K |
 | SBI depth | 693 m | 658 m | 820 m |
 | T(850) − T(2 m) | +3.81 K | +2.47 K | +7.89 K |
+| T(850) − T(skin) | +4.10 K | +1.86 K | +7.92 K |
 
 CARRA-2's stronger-inversion character survives the domain matching intact:
 +31 points of SBI frequency and +3.6 K of conditional strength over ERA5 on

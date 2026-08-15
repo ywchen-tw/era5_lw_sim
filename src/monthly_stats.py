@@ -84,9 +84,9 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
                 w2d = np.where(box, w2d, 0.0)
             shape = w2d.shape
             for key in ("found", "strength_found", "depth_p", "depth_z", "top_p",
-                        "strength_uncond", "dt850", "dt925"):
+                        "strength_uncond", "dt850", "dt850s", "dt925"):
                 sums[key] = np.zeros(shape)
-            for key in ("n_dt850", "n_dt925"):
+            for key in ("n_dt850", "n_dt850s", "n_dt925"):
                 sums[key] = np.zeros(shape)
 
         found = ds["sbi_found"].values.astype(bool)
@@ -100,7 +100,10 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
         sums["depth_z"] += np.nansum(depth_z, axis=0)
         sums["top_p"] += np.nansum(ds["sbi_top_p"].values, axis=0)
         sums["strength_uncond"] += np.nan_to_num(strength).sum(axis=0)
-        for key, var in (("dt850", "dt_850_2m"), ("dt925", "dt_925_1000")):
+        for key, var in (("dt850", "dt_850_2m"), ("dt850s", "dt_850_skt"),
+                         ("dt925", "dt_925_1000")):
+            if var not in ds:          # daily files predating dt_850_skt
+                continue
             vals = ds[var].values.astype(float)
             sums[key] += np.nansum(vals, axis=0)
             sums["n_" + key] += np.isfinite(vals).sum(axis=0)
@@ -129,13 +132,14 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
         depth_z = np.where(sums["found"] > 0, sums["depth_z"] / sums["found"], np.nan)
         top_p = np.where(sums["found"] > 0, sums["top_p"] / sums["found"], np.nan)
         dt850 = np.where(sums["n_dt850"] > 0, sums["dt850"] / sums["n_dt850"], np.nan)
+        dt850s = np.where(sums["n_dt850s"] > 0, sums["dt850s"] / sums["n_dt850s"], np.nan)
         dt925 = np.where(sums["n_dt925"] > 0, sums["dt925"] / sums["n_dt925"], np.nan)
 
     # cells outside the requested area exist only because a projected bounding
     # box is rectangular; blank them rather than reporting them as "no SBI"
-    freq, cond, depth_p, depth_z, top_p, dt850, dt925 = (
+    freq, cond, depth_p, depth_z, top_p, dt850, dt850s, dt925 = (
         np.where(valid, f, np.nan)
-        for f in (freq, cond, depth_p, depth_z, top_p, dt850, dt925))
+        for f in (freq, cond, depth_p, depth_z, top_p, dt850, dt850s, dt925))
     strength_uncond = np.where(valid, sums["strength_uncond"] / n_time, np.nan)
 
     hdims = grid_hdims(template)
@@ -148,6 +152,7 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
             "sbi_depth_z_mean": (hdims, depth_z.astype(np.float32)),
             "sbi_top_p_mean": (hdims, top_p.astype(np.float32)),
             "dt_850_2m_mean": (hdims, dt850.astype(np.float32)),
+            "dt_850_skt_mean": (hdims, dt850s.astype(np.float32)),
             "dt_925_1000_mean": (hdims, dt925.astype(np.float32)),
             "hist_strength": (("strength_bin",), hist_strength),
             "hist_strength_depth": (("strength_bin", "depth_bin"), hist_sd),
@@ -169,7 +174,8 @@ def aggregate(files: list[Path], label: str = "ERA5", area=None,
     out["domain_mask"] = (hdims, valid)
     units = {"sbi_frequency": "1", "sbi_strength_cond": "K", "sbi_strength_uncond": "K",
              "sbi_depth_p_mean": "hPa", "sbi_depth_z_mean": "m", "sbi_top_p_mean": "hPa",
-             "dt_850_2m_mean": "K", "dt_925_1000_mean": "K",
+             "dt_850_2m_mean": "K", "dt_850_skt_mean": "K",
+             "dt_925_1000_mean": "K",
              "ts_sbi_frequency": "1", "ts_strength_cond": "K", "ts_strength_uncond": "K"}
     for name, unit in units.items():
         out[name].attrs["units"] = unit
@@ -201,8 +207,11 @@ def fig_maps(out: xr.Dataset, year: int, month: int, outdir: Path,
         ("sbi_strength_cond", "SBI strength, detected cases  (K)", "seq", {}),
         ("sbi_depth_z_mean", "SBI depth, detected cases  (m)", "seq", {}),
         ("dt_850_2m_mean", "T(850 hPa) − T(2 m)  (K)", "div", {}),
+        ("dt_850_skt_mean", "T(850 hPa) − T(skin)  (K)", "div", {}),
         ("dt_925_1000_mean", "T(925 hPa) − T(1000 hPa)  (K)", "div", {}),
     ]
+    panels = [p for p in panels
+              if p[0] in out and np.isfinite(out[p[0]].values).any()]
     fig, axes = plt.subplots(2, 3, figsize=(14.5, 11.4), layout="constrained",
                              subplot_kw={"projection": ccrs.NorthPolarStereo()})
     fig.get_layout_engine().set(rect=(0, 0, 1, 0.95))
@@ -211,7 +220,8 @@ def fig_maps(out: xr.Dataset, year: int, month: int, outdir: Path,
         polar_panel(axes[i], field=out[var].values, kind=kind,
                     cbar_label=label, **gkw, **kw)
         panel_label(axes[i], "abcdefgh"[i], x=-0.02, y=1.05)
-    axes[-1].set_visible(False)
+    for ax in axes[len(panels):]:
+        ax.set_visible(False)
     fig.suptitle(f"{out.attrs.get('source_label', 'ERA5')} monthly temperature-inversion statistics — "
                  f"{calendar.month_name[month]} {year} — gray: no data / below ground",
                  y=0.99)

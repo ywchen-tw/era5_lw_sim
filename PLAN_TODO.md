@@ -201,6 +201,19 @@ the README. Update this file when a stage lands or a plan changes.
       full-domain numbers exactly (mask identity check). NOTE the raw
       retained chunks were verified 85-90N-masked (0 finite cells below
       85N), so extending CARRA-2 southward still needs a re-download.
+- [x] **Skin-referenced inversion strength `dt_850_skt`** — T(850) − T(skin)
+      added to the fixed-level metrics (daily files recomputed for Jan 2020,
+      all existing variables verified bit-identical; monthly + matched-domain
+      aggregations and the maps figure carry it). Motivation: the ~+3 K
+      warm-surface bias lives in the 2 m *diagnostic* (stage 6b), so the 2 m-
+      and skin-referenced strengths bracket the surface-coupling uncertainty.
+      Result (85-90N): the skin−2m offset differs in SIGN between the global
+      sources — ERA5 skin 0.3 K colder than its 2 m, MERRA-2 skin 0.6 K
+      warmer, CARRA-2 within 0.03 K — so the cross-source spread in
+      surface-referenced strength widens from 5.4 to 6.1 K with the skin.
+      No MOSAiC scoring for this metric: the radiosondes measure air, not
+      skin (the sounding files have no skin-temperature counterpart).
+
 - [ ] **ERA5-MERRA-2 SBI detection gap is a latitude story** — on their
       shared 80-90N domain they differ by 17.8 points in SBI frequency
       (61.6 vs 43.8 %) despite near-identical surface biases. Band-split

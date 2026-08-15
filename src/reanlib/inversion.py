@@ -26,6 +26,17 @@ Three metrics are computed at every grid point and time:
    doi:10.1175/2011JCLI3968.1; Pavelsky, Boe, Hall & Fetzer (2011),
    Clim. Dyn., doi:10.1007/s00382-010-0756-8.
 
+2b. dt_850_skt = T(850 hPa) - T(skin)
+   Same fixed-level construction referenced to the SKIN temperature instead
+   of the 2 m diagnostic. Over winter sea ice the two differ systematically
+   (the 2 m value is a diagnostic interpolation between the skin and the
+   lowest model level, and this pipeline's MOSAiC comparison shows the
+   global reanalyses' ~+3 K warm-surface bias lives in exactly that
+   diagnostic), so the skin-referenced strength brackets the surface-coupling
+   uncertainty from the other side. The skin temperature is a model *product*
+   of the surface energy balance, not an assimilated air temperature, so this
+   variant is more model-dependent, not less.
+
 3. dt_925_1000 = T(925 hPa) - T(1000 hPa)
    Simplest fixed-level metric, requiring only pressure-level data; used with
    ERA5 in e.g. arXiv:2011.11127. Related two-level stability metrics: LTS
@@ -61,6 +72,9 @@ REFERENCES = {
     "dt_850_2m": ("Medeiros, Deser, Tomas & Kay (2011) J. Climate 24, "
                   "doi:10.1175/2011JCLI3968.1; Pavelsky et al. (2011) "
                   "Clim. Dyn., doi:10.1007/s00382-010-0756-8"),
+    "dt_850_skt": ("skin-referenced variant of dt_850_2m (same references); "
+                   "motivated by the 2 m warm-surface bias over Arctic sea "
+                   "ice seen in this pipeline's MOSAiC comparison"),
     "dt_925_1000": ("e.g. arXiv:2011.11127; cf. LTS: Klein & Hartmann (1993) "
                     "J. Climate 6, 1587-1606; EIS: Wood & Bretherton (2006) "
                     "J. Climate 19, 6425-6432"),
@@ -177,15 +191,19 @@ def column_heights(T: np.ndarray, p_hpa: np.ndarray, t2m: float, sp_hpa: float,
 
 
 def fixed_level_metrics(ds_plev: xr.Dataset, t2m: xr.DataArray,
-                        sp_hpa: xr.DataArray, cfg: dict) -> xr.Dataset:
-    """dt_850_2m and dt_925_1000 with optional below-ground masking."""
+                        skt: xr.DataArray, sp_hpa: xr.DataArray,
+                        cfg: dict) -> xr.Dataset:
+    """dt_850_2m, dt_850_skt and dt_925_1000, with below-ground masking."""
     t = ds_plev["t"]
     dt_850_2m = t.sel(pressure_level=850) - t2m
+    dt_850_skt = t.sel(pressure_level=850) - skt
     dt_925_1000 = t.sel(pressure_level=925) - t.sel(pressure_level=1000)
     if cfg["masking"]["mask_fixed_below_ground"]:
         dt_850_2m = dt_850_2m.where(sp_hpa >= 850)
+        dt_850_skt = dt_850_skt.where(sp_hpa >= 850)
         dt_925_1000 = dt_925_1000.where(sp_hpa >= 1000)
-    out = xr.Dataset({"dt_850_2m": dt_850_2m, "dt_925_1000": dt_925_1000})
+    out = xr.Dataset({"dt_850_2m": dt_850_2m, "dt_850_skt": dt_850_skt,
+                      "dt_925_1000": dt_925_1000})
     return out.drop_vars("pressure_level", errors="ignore")
 
 
@@ -245,7 +263,8 @@ def compute_inversion_dataset(ds_plev: xr.Dataset, ds_sfc: xr.Dataset,
         },
         coords=coords,
     )
-    out = out.merge(fixed_level_metrics(ds_plev, t2m, sp_hpa, cfg).astype(np.float32))
+    out = out.merge(fixed_level_metrics(ds_plev, t2m, skt, sp_hpa,
+                                        cfg).astype(np.float32))
     out["t2m"] = t2m.astype(np.float32)
     out["skt"] = skt.astype(np.float32)
     out["sp"] = ds_sfc["sp"].transpose(*out_dims).astype(np.float32)
@@ -265,6 +284,7 @@ def compute_inversion_dataset(ds_plev: xr.Dataset, ds_sfc: xr.Dataset,
         "sbi_depth_z": ("m", "SBI depth above surface (hypsometric, approximate)", "sbi"),
         "sbi_found": ("1", "1 where a surface-based inversion was detected", "sbi"),
         "dt_850_2m": ("K", "T(850 hPa) - T(2 m)", "dt_850_2m"),
+        "dt_850_skt": ("K", "T(850 hPa) - T(skin)", "dt_850_skt"),
         "dt_925_1000": ("K", "T(925 hPa) - T(1000 hPa)", "dt_925_1000"),
         "t2m": ("K", "2 m temperature (from the single-level file)", ""),
         "skt": ("K", "skin temperature (from the single-level file)", ""),
