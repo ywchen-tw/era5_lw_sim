@@ -136,26 +136,66 @@ def chunk_days_for(cfg: dict, kind: str, override: int | None = None) -> int:
     return int(value)
 
 
+def extracted_dir(path: Path) -> Path:
+    """Where a zipped delivery's members are unpacked (cleaned up with it)."""
+    return path.with_suffix(path.suffix + ".d")
+
+
 def open_delivery(path: Path):
     """Open a CDS delivery as one dataset, merging a zipped multi-part reply.
 
     The CDS returns a zip of one netCDF per GRIB stream when a request spans
-    several, exactly as it does for ERA5.
+    several, exactly as it does for ERA5. Two CARRA-2 specifics:
+
+    * members can sit on DIFFERENT canvases — sea-ice fraction arrives on a
+      2880x2880 mesh while everything else uses the usual 2869x2869, sharing
+      the same origin. Members are cropped to the common frame, verified by
+      comparing the 2-D latitudes cell for cell (the trimmed edge is at the
+      ~42N canvas corners, far outside any requested area);
+    * members are opened LAZILY (extracted beside the raw file, removed by
+      ``cleanup_delivery``): a month of single-level fields materialized at
+      once is ~25 GB, and the per-day clip in ``write_normalized_chunk``
+      never needs more than one day's box.
     """
+    import numpy as np
     import xarray as xr
 
     if not zipfile.is_zipfile(path):
         return xr.open_dataset(path)
-    with tempfile.TemporaryDirectory(dir=path.parent) as tmp:
-        with zipfile.ZipFile(path) as zf:
-            members = zf.namelist()
-            zf.extractall(tmp)
-        parts = [xr.open_dataset(Path(tmp) / m) for m in members]
-        merged = xr.merge(parts, compat="no_conflicts",
-                          combine_attrs="drop_conflicts").load()
-        for p in parts:
-            p.close()
-    return merged
+    tmp = extracted_dir(path)
+    tmp.mkdir(exist_ok=True)
+    with zipfile.ZipFile(path) as zf:
+        members = zf.namelist()
+        zf.extractall(tmp)
+    parts = [xr.open_dataset(tmp / m) for m in members]
+
+    ny = min(p.sizes["y"] for p in parts if "y" in p.sizes)
+    nx = min(p.sizes["x"] for p in parts if "x" in p.sizes)
+    cropped = []
+    ref_lat = None
+    for p in parts:
+        if {"y", "x"} <= set(p.sizes):
+            p = p.isel(y=slice(0, ny), x=slice(0, nx))
+        lat = p["latitude"].values if "latitude" in p.coords else None
+        if lat is not None:
+            if ref_lat is None:
+                ref_lat = lat
+            elif not np.allclose(lat, ref_lat, atol=1e-3, equal_nan=True):
+                raise ValueError(
+                    f"delivery members in {path.name} disagree on latitude "
+                    "after cropping to the common canvas — grids do not "
+                    "share an origin, refusing to merge")
+        cropped.append(p)
+    return xr.merge(cropped, compat="no_conflicts",
+                    combine_attrs="drop_conflicts")
+
+
+def cleanup_delivery(path: Path) -> None:
+    """Remove a raw delivery and its extraction directory."""
+    import shutil
+
+    path.unlink(missing_ok=True)
+    shutil.rmtree(extracted_dir(path), ignore_errors=True)
 
 
 def _split_static(ds):
@@ -351,7 +391,7 @@ def download_chunk(kind: str, cfg: dict, dates: list[dt.date], hours: list[int],
         raw.parent.mkdir(parents=True, exist_ok=True)
         client.retrieve(cfg["carra2"]["dataset"], request).download(str(raw))
         results = write_normalized_chunk(raw, kind, cfg, area, todo)
-        raw.unlink(missing_ok=True)
+        cleanup_delivery(raw)
     except Exception as exc:
         # the raw delivery is deliberately left in place: a normalization bug
         # is then fixable offline instead of costing another queue position

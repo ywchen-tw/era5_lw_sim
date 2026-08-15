@@ -235,6 +235,13 @@ def normalize_carra2(ds: xr.Dataset, kind: str, cfg: dict | None = None,
     if area is not None:
         ds = clip_to_area(ds, area)
 
+    # fraction fields CARRA-2 delivers in percent (cc and tcc observed at
+    # 0-100; siconc has arrived as 0-1 but gets the same guard)
+    for name in ("cc", "tcc", "siconc"):
+        if name in ds and float(np.nanmax(ds[name].values)) > 1.5:
+            ds[name] = ds[name] / 100.0
+            ds[name].attrs["units"] = "1"
+
     if "pressure_level" in ds.dims:
         ds["pressure_level"] = ds["pressure_level"].astype(float)
         ds = ds.sortby("pressure_level", ascending=False)
@@ -251,10 +258,6 @@ def normalize_carra2(ds: xr.Dataset, kind: str, cfg: dict | None = None,
                             "pressure levels"),
             }
             ds = ds.drop_vars("r")
-        # cloud cover is delivered in %, ERA5's cc is a 0-1 fraction
-        if "cc" in ds and float(np.nanmax(ds["cc"].values)) > 1.5:
-            ds["cc"] = ds["cc"] / 100.0
-            ds["cc"].attrs["units"] = "1"
 
     ds = _projection_coords(ds)
 
