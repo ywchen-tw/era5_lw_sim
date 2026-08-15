@@ -84,6 +84,54 @@ the README. Update this file when a stage lands or a plan changes.
 
 ## Next (in rough priority order)
 
+- [ ] **Stratified inversion statistics: (clear / partial / cloudy) x
+      (land / open water / marginal ice / pack ice)** — IN PROGRESS.
+      Code is done and committed: `reanlib/classes.py` (thresholds: land
+      lsm ≥ 0.5; SIC < 5 % open / > 95 % pack / marginal between;
+      tcc ≤ 5 % clear / ≥ 95 % cloudy / partial between — clear sits at 5 %
+      because MERRA-2's CLDTOT never reaches 1 %), `daily_inversion` stores
+      per-instant int8 `surface_class`/`sky_class` in the daily files, and
+      `monthly_stats` pools area-weighted statistics over cell-times per
+      (sky x surface) cell (`strat_*` variables + printed table, with
+      cell-time counts and domain-time shares so thin categories are never
+      mistaken for well-sampled ones). NOT yet run on real data — every
+      source's classification fields are in download queues:
+      * ERA5: January sfc re-fetch with land_sea_mask + sea_ice_cover +
+        total_cloud_cover (day 1 keeps the stage-7c 11/12/13Z hours).
+      * MERRA-2: new `ocn` (M2T1NXOCN FRSEAICE) and `const` (M2C0NXASM land
+        fractions, one file) downloader kinds + rad/CLDTOT for days 2-31.
+      * CARRA-2: classification fields ride along with the 80-90N
+        re-download (next item).
+      When each source's data lands: recompute its dailies (classes merge
+      in), re-aggregate monthlies (`--hours 0 6 12 18`), verify baselines
+      unchanged, then the three-source stratified table. ERA5/MERRA-2 can
+      run before CARRA-2's queue clears. Caveats already known: land at
+      80-90N is mostly ice sheet above the 850 hPa surface (dt_850 metrics
+      masked there — the land category is carried by the SBI scan), coastal
+      cells hide SIC ambiguity under the lsm test, and January open water
+      exists only in the Atlantic sector.
+      ERA5 DONE (first real run; baseline 61.6 %/6.43 K reproduced). The
+      table is physically coherent and sharp: SBI frequency / cond strength
+      by (sky, surface) — clear pack 97.5 %/8.3 K vs cloudy pack
+      59.8 %/6.2 K (cloud is the largest single control); open water kills
+      SBIs (0.4 % under cloud, 1.2 K when clear); marginal ice intermediate
+      (88 → 29 % clear → cloudy); land (ice sheet) strongest at ~100 %/
+      11-11.4 K. Shares of domain-time: cloudy-pack 52 %, all-clear
+      categories together only ~3 % — January 2020 was overcast (consistent
+      with stage 7's 0.6-11 % clear-pixel screens).
+- [ ] **CARRA-2 at 80-90N** — IN PROGRESS: config widened (area + the three
+      classification sfc variables, names validated against the CDS costing
+      endpoint; measured cost does NOT scale with area — plev 960/day either
+      way, so chunking stays 12 d) and the forced re-download of January is
+      queued (3 plev + 1 sfc requests). On arrival, normalization REPLACES
+      the 85-90N day files ("grid changed"), which also drops day 1's merged
+      cloud fields — re-fetch `--datasets cloud rad` at 80-90N before any
+      stage-7 rerun. Then: recompute dailies (with classes), monthlies, and
+      the `--area 90 -180 85 180` tagged files, verifying they reproduce the
+      committed 85-90N numbers (92.0 % / 9.78 K); rerun stages 5-6/6b (their
+      results should be unchanged — all soundings sit at 86.7-87.6N — but
+      verify). The 85-90N raw plev chunks stay on disk as the published-r
+      archive for the humidity-convention work.
 - [ ] **CURC fine-grid stage-8 run** — local `reptran coarse` (~15 cm⁻¹)
       under-resolves far-IR channels (3–9 cm⁻¹ wide); science-grade BT and
       K need `reptran fine` on CURC (`slurm/curc_prefire_bt.sh`; NEVER
@@ -238,14 +286,12 @@ the README. Update this file when a stage lands or a plan changes.
       the stage-7c footgun (extra 11Z/13Z hours in a daily file skewing a
       re-aggregation). `profile_analysis` (PCA) does not have the knob yet —
       add it there if a matched-domain EOF comparison is ever needed.
-- [ ] **Widen CARRA-2 to 80-90N if the spatial story matters** — the current
-      85-90N domain is all pack ice and drops N Greenland / Ellesmere /
-      Svalbard / Franz Josef Land / Severnaya Zemlya, i.e. exactly the
-      terrain where 2.5 km has most reason to beat 0.25 deg. 4x the volume
-      (41 GB/month vs 10 GB). Trimming `plev_variables` to temperature +
-      relative_humidity would pay for most of that (stages 1-6 read no other
-      profile field), at the cost of re-downloading if stage 7 is ever
-      ported — though that is blocked on ozone regardless.
+- [ ] **CARRA-2 stage 7 cloudy (overcast)** — now unblocked: the day-1 plev
+      file carries clwc/ciwc/cc (until the 80-90N replacement lands; re-fetch
+      `--datasets cloud` afterwards) and the rad reference works. Screening
+      as for ERA5 (cc_max ≥ 0.99 + condensate); note the day-1 12Z condensate
+      was strikingly low over the pack (max clwc 5e-7 kg/kg), so the overcast
+      population may need another day or the 80-90N domain.
 - [x] **CARRA-2 first real-data validation** — January 2020 downloaded and
       run end to end through stages 1–6. The delivery exposed five bugs the
       synthetic test could not (it built its grid from the same assumptions
@@ -322,4 +368,10 @@ the README. Update this file when a stage lands or a plan changes.
   grid. Horizontal reductions, nearest-cell lookups and map panels go through
   `reanlib/grid.py` and `mapping.grid_kwargs`.
 - `reptran fine`/`medium` never on the local Mac — CURC only.
+- Monthly re-aggregations pass `--hours 0 6 12 18`: the 2020-01-01 daily
+  files carry stage-7c's extra 11/12/13Z hours, which would otherwise be
+  silently weighted in (this is what once nudged ERA5's 61.6 % to 61.4 %).
+- CARRA-2 CDS deliveries can use GRIB short names the form does not show
+  (`ccl` for cloud cover); `io_carra2.normalize_carra2` fails loudly on
+  unrecognized variables — extend `VAR_ALIASES`, don't relax the guard.
 - Commits are made locally on request; pushing is done by the user.
