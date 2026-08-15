@@ -473,16 +473,26 @@ rmse collapses with height for every source (2.4–2.7 K at 1000 hPa,
 
 **Humidity separates the sources further than temperature**, and in the
 reverse order of horizontal resolution — q rmse over 1000–700 hPa is
-0.07–0.10 g/kg (ERA5), 0.09–0.16 (MERRA-2), 0.12–0.21 (CARRA-2). CARRA-2 is
-also biased moist aloft, growing from +1 % RH at 875 hPa to **+37 % at
-300 hPa** while the other two stay within ±6 %. That growth with falling
-temperature is the signature of a water-versus-ice saturation mismatch, so it
-was tested rather than assumed: reconverting CARRA-2's published humidity over
-ice makes the whole column too dry (mean |q bias| 0.055 g/kg against 0.043 for
-water), so `rh_over: water` stands and the moist bias is not a conversion
-artefact. Nor is it a collocation artefact: matching each level at the
-balloon's own drifted position (below) leaves it essentially unchanged. A
-residual height dependence survives and is filed in PLAN_TODO.
+0.07–0.10 g/kg (ERA5), 0.09–0.16 (MERRA-2), 0.12–0.21 (CARRA-2). CARRA-2
+also *appears* biased moist aloft under the pipeline's over-water reading,
+growing from +1 % RH at 875 hPa to **+37 % at 300 hPa** while the other two
+stay within ±6 %. That departure was chased to ground against the published
+`r` field itself (read from the raw deliveries at the same matched cells,
+ingest validated to 0.0001 % RH) and is a **saturation-convention artifact,
+not model moisture**: read as over-ice, the upper-air bias collapses
+(500 hPa +28.6 → +0.04 %, 300 hPa +36.7 → +0.15 %) while below 800 hPa the
+over-water reading stays correct, and the implied conversion factor binned
+by temperature tracks the theoretical e_w/e_i(T) curve for T ≲ −25 °C.
+CARRA-2's pressure-level r follows the model's temperature-dependent
+saturation (ice-like in cold air) — unlike its 2 m RH, documented as
+over-water; the docs are silent for pressure levels. `rh_over: water` stays
+at ingest (the transition is empirically under-constrained between −30 and
+−20 °C), so derived CARRA-2 q above ~750 hPa is biased high by construction
+— up to ×1.5 at 300 hPa — and the humidity ranking above should be read for
+the lower troposphere, where the water reading is right and nearly all
+vapour lives. It is not a collocation artefact either: matching each level
+at the balloon's own drifted position (below) leaves it essentially
+unchanged.
 
 **These soundings are not independent.** MOSAiC radiosondes were transmitted
 on the GTS and assimilated, so agreement aloft partly measures how strongly

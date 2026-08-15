@@ -143,19 +143,33 @@ the README. Update this file when a stage lands or a plan changes.
       level RH band sits entirely on the moist side of zero (consistent
       offset) while ERA5/MERRA-2 bands straddle it (scatter).
 
-- [ ] **CARRA-2 moist bias aloft** — the profile comparison (stage 6b) shows
-      CARRA-2 q running +0.06…+0.08 g/kg high through 750–500 hPa, which in
-      RH terms grows to +22 % at 600 hPa and +37 % at 300 hPa, while ERA5 and
-      MERRA-2 sit within ±6 %. Two explanations tested and REJECTED: (1) RH
-      defined over ice — converting its published RH over ice makes the whole
-      column too dry (mean |q bias| 0.055 g/kg vs 0.043 for water), so
-      `rh_over: water` stays; (2) balloon-drift collocation error — matching
-      each level at the balloon's own drifted position leaves the bias
-      unchanged. A residual height dependence in (1) remains — water fits
-      best near the surface, ice best near 600 hPa — so a non-IFS mixed-phase
-      ramp cannot be ruled out. Worth settling against CARRA-2's own published
-      `r` field (which the ingest currently discards after deriving q) before
-      treating the moist bias as physical.
+- [x] **CARRA-2 moist bias aloft — RESOLVED: saturation-convention artifact,
+      not model moisture.** Settled against the published `r` field read
+      straight from the retained raw chunks at the same drifted-balloon
+      matched cells as stage 6b. Three results: (1) ingest validated end to
+      end — published r equals the stage-6b RH recomputed from our derived q
+      to 0.0001 % RH, so the +37 % at 300 hPa is a property of the delivered
+      field under an over-water reading; (2) read as over-ICE, the upper-air
+      bias collapses (600 hPa +22.2 → +1.1 %, 500 +28.6 → +0.04 %, 300
+      +36.7 → +0.15 %) while below 800 hPa the over-water reading stays the
+      good one (850 hPa: +2.0 % water vs −12.2 % ice); (3) binning
+      r_published/RH_sonde by CARRA temperature tracks the theoretical
+      e_w/e_i(T) curve for T ≲ −25 °C (1.56 vs 1.64 at −52 °C, 1.45 vs 1.50
+      at −42 °C) and sits near 1.09 for T ≳ −20 °C. So CARRA-2's
+      pressure-level r follows the model's temperature-dependent saturation
+      (ice-like in cold air), unlike its 2 m RH which the CARRA docs define
+      over water; the docs are silent on the plev convention. The earlier
+      "ice rejected" test failed because it applied ice at ALL temperatures,
+      which wrecks the (water-correct) moist lower levels that dominate the
+      column q. CONSEQUENCES: `rh_over: water` stays at ingest (the
+      empirical transition is under-constrained between −30 and −20 °C, and
+      an invented ramp would bake a guess into the data); stage-6b upper-air
+      CARRA-2 q/RH biases are conversion artifacts, not model moisture; the
+      lower-troposphere humidity ranking (where the water reading is right
+      and nearly all vapour lives) is unaffected. DECISION OPEN: implement an
+      empirical ice-below-243 K / water-above-253 K ramp in the ingest and
+      re-normalize the month from the retained chunks, if upper-air CARRA-2
+      humidity is ever used quantitatively.
 
 - [ ] **CARRA-2 stage 7 (LW closure)** — blocked on two source gaps, both
       documented in the README: CARRA-2 publishes **no ozone** (needs a
