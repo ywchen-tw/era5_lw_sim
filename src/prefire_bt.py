@@ -1600,12 +1600,19 @@ def cmd_stats(args) -> int:
         ax_h.plot(h, [c["mean"] for c in cols_s], mk, ms=3.4,
                   mfc="none" if mk == "o" else None, color=color,
                   label=sky, ls="none")
-    # per-hour mean bar for each sky class (clear orange, overcast dark gray)
-    for cols_s, color in ((clear, "#D55E00"), (over, "0.35")):
-        for h in sorted({c["hour"] for c in cols_s}):
+    # per-hour mean bar with a ±1σ band for each sky class (clear orange,
+    # overcast dark gray); σ is across that hour's column means, so an
+    # hour holding a single column draws no visible band
+    for cols_s, color, name in ((clear, "#D55E00", "clear"),
+                                (over, "0.35", "overcast")):
+        for i, h in enumerate(sorted({c["hour"] for c in cols_s})):
             vals = [c["mean"] for c in cols_s if c["hour"] == h]
-            ax_h.plot([h - 0.8, h + 0.8], [np.mean(vals)] * 2, "-", lw=1.6,
-                      color=color)
+            m, s = float(np.mean(vals)), float(np.std(vals))
+            ax_h.fill_between([h - 0.8, h + 0.8], m - s, m + s, color=color,
+                              alpha=0.18, lw=0)
+            ax_h.plot([h - 0.8, h + 0.8], [m] * 2, "-", lw=1.6, color=color,
+                      label=(f"{name} hour mean $\\pm1\\sigma$"
+                             if i == 0 else None))
     ax_h.axhline(0, color="k", lw=0.7, ls="--")
     ax_h.set_xticks(sorted({c["hour"] for c in per_col}))
     ax_h.set_xlabel("analysis hour (UTC)")
