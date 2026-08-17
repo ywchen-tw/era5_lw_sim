@@ -270,6 +270,7 @@ def cmd_collocate(args) -> int:
             cldtot_cache[et] = load_cldtot(cfg, et.date(), et)
         return cldtot_cache[et]
 
+    epoch = dt.datetime(1970, 1, 1)
     columns = []
     for (et_iso, iy, ix), fps in sorted(groups.items()):
         et = dt.datetime.fromisoformat(et_iso)
@@ -294,6 +295,21 @@ def cmd_collocate(args) -> int:
             sky = "overcast"
         else:
             sky = "partial"
+        # per-scene mean observed BT + mean obs time for EVERY column (scenes
+        # have distinct wavelength registrations), so cross-instrument
+        # comparison on shared scenes does not depend on the test-set pick
+        scenes = {}
+        for f in fps:
+            scenes.setdefault(f["scene"], []).append(
+                [np.nan if v is None else v for v in f["bt"]])
+        obs_bt = {}
+        for sc, vv in sorted(scenes.items()):
+            m = np.nanmean(np.array(vv, dtype=float), axis=0)
+            obs_bt[str(sc)] = [None if not np.isfinite(v)
+                               else round(float(v), 3) for v in m]
+        tsec = float(np.mean(
+            [(dt.datetime.fromisoformat(f["time"]) - epoch).total_seconds()
+             for f in fps]))
         columns.append({
             "label": f"{et:%Y%m%dT%H}Z_{iy:02d}_{ix:03d}",
             "etime": et_iso, "iy": iy, "ix": ix,
@@ -304,6 +320,9 @@ def cmd_collocate(args) -> int:
             "mean_dt_h": float(np.mean(
                 [abs((dt.datetime.fromisoformat(f["time"]) - et)
                      .total_seconds()) / 3600.0 for f in fps])),
+            "mean_time": (epoch + dt.timedelta(seconds=tsec)).isoformat(),
+            "vza": float(np.mean([f["vza"] for f in fps])),
+            "obs_bt": obs_bt,
             "footprints": fps,
         })
 
@@ -1151,6 +1170,399 @@ def cmd_cotscan(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- compare
+
+#: channels are matched across instruments by wavelength; half the ~0.84-um
+#: TIRS channel spacing keeps a match unambiguous
+MATCH_DWL_UM = 0.45
+WINDOW_UM = (10.0, 12.0)
+
+
+def column_mean_spectrum(col: dict, srf: dict) -> "tuple[np.ndarray, np.ndarray]":
+    """(bt, wl) per channel index, averaged over the column's scenes.
+
+    Within one instrument the scene-to-scene registration shift is a small
+    fraction of the channel spacing, so pooling by channel index is safe;
+    ACROSS instruments it is not — that is what wavelength matching is for.
+    """
+    bt = np.full((len(col["obs_bt"]), N_CHANNEL), np.nan)
+    wl = np.full((len(col["obs_bt"]), N_CHANNEL), np.nan)
+    for i, (sc_str, vals) in enumerate(sorted(col["obs_bt"].items())):
+        sc = int(sc_str)
+        bt[i] = [np.nan if v is None else v for v in vals]
+        wl[i] = srf["mean_wl"][:, sc]
+        bt[i, srf["bitflags"][:, sc] != 0] = np.nan
+    return np.nanmean(bt, axis=0), np.nanmean(wl, axis=0)
+
+
+def cmd_compare(args) -> int:
+    """TIRS1 vs TIRS2 observed BT on shared (cell, state-hour) columns.
+
+    A shared column is the same reanalysis cell and analysis state observed
+    by both satellites; each instrument's mean observed BT is matched channel
+    by channel via wavelength (each has its own registration). The obs times
+    still differ by up to twice the snap window, so statistics are also given
+    for the subset with |t1 - t2| <= --max-dt (real atmospheric change is
+    part of the difference outside that).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from reanlib.plotstyle import apply_agu_style, panel_label
+
+    cfg = load_config(args.config, source=args.source)
+    sat_a, sat_b = args.sats
+    colls, srfs = {}, {}
+    for s in (sat_a, sat_b):
+        p = collocation_path(cfg, args.year, args.month, s)
+        if not p.exists():
+            sys.exit(f"missing {p} — run collocate --sat {s} first")
+        colls[s] = json.loads(p.read_text())
+        srfs[s] = load_srf(str(srf_path(cfg, s)))
+
+    def by_key(coll):
+        return {(c["etime"], c["iy"], c["ix"]): c
+                for c in coll["columns"] if c.get("obs_bt")}
+
+    ka, kb = by_key(colls[sat_a]), by_key(colls[sat_b])
+    shared = sorted(set(ka) & set(kb))
+    print(f"SAT{sat_a}: {len(ka)} columns, SAT{sat_b}: {len(kb)} columns, "
+          f"shared (cell, hour): {len(shared)}")
+    if not shared:
+        sys.exit("no shared columns — nothing to compare")
+
+    n_sky = {}
+    rows = []           # one per shared column
+    dbt = np.full((len(shared), N_CHANNEL), np.nan)   # SATb - SATa, on a's channels
+    dwl = np.full((len(shared), N_CHANNEL), np.nan)
+    for i, key in enumerate(shared):
+        ca, cb = ka[key], kb[key]
+        n_sky[ca["sky"]] = n_sky.get(ca["sky"], 0) + 1
+        bt_a, wl_a = column_mean_spectrum(ca, srfs[sat_a])
+        bt_b, wl_b = column_mean_spectrum(cb, srfs[sat_b])
+        ok_b = np.isfinite(bt_b) & np.isfinite(wl_b)
+        for c in np.where(np.isfinite(bt_a) & np.isfinite(wl_a))[0]:
+            if not ok_b.any():
+                break
+            j = int(np.nanargmin(np.where(ok_b, np.abs(wl_b - wl_a[c]), np.inf)))
+            if abs(wl_b[j] - wl_a[c]) <= MATCH_DWL_UM:
+                dbt[i, c] = bt_b[j] - bt_a[c]
+                dwl[i, c] = wl_b[j] - wl_a[c]
+        win_a = np.isfinite(bt_a) & (wl_a >= WINDOW_UM[0]) & (wl_a <= WINDOW_UM[1])
+        win_b = np.isfinite(bt_b) & (wl_b >= WINDOW_UM[0]) & (wl_b <= WINDOW_UM[1])
+        dt_h = ((dt.datetime.fromisoformat(cb["mean_time"])
+                 - dt.datetime.fromisoformat(ca["mean_time"]))
+                .total_seconds() / 3600.0)
+        rows.append({
+            "etime": key[0], "iy": key[1], "ix": key[2], "sky": ca["sky"],
+            "lat": ca["lat"], "lon": ca["lon"], "dt_h": dt_h,
+            "win_bt_a": float(np.mean(bt_a[win_a])) if win_a.any() else None,
+            "win_bt_b": float(np.mean(bt_b[win_b])) if win_b.any() else None,
+            "bt_a": bt_a, "wl_a": wl_a, "bt_b": bt_b, "wl_b": wl_b,
+        })
+
+    adt = np.array([abs(r["dt_h"]) for r in rows])
+    tight = adt <= args.max_dt
+    print(f"sky classes of shared columns: {n_sky}")
+    print(f"|t{sat_b} - t{sat_a}|: median {np.median(adt):.2f} h, "
+          f"{int(tight.sum())} columns within {args.max_dt:g} h")
+
+    def channel_stats(mask):
+        d = dbt[mask]
+        n = np.isfinite(d).sum(axis=0)
+        with np.errstate(invalid="ignore"):
+            mean = np.nanmean(np.where(np.isfinite(d), d, np.nan), axis=0)
+            std = np.nanstd(np.where(np.isfinite(d), d, np.nan), axis=0)
+        return mean, std, n
+
+    mean_all, std_all, n_all = channel_stats(np.ones(len(rows), bool))
+    mean_t, std_t, n_t = channel_stats(tight)
+    samples_t = dbt[tight][np.isfinite(dbt[tight])]
+    print(f"tight subset ({int(tight.sum())} columns): "
+          f"BT{sat_b} - BT{sat_a} = {np.mean(samples_t):+.2f} K mean, "
+          f"rmse {np.sqrt(np.mean(samples_t ** 2)):.2f} K over "
+          f"{samples_t.size} (column, channel) samples")
+
+    wa = np.array([r["win_bt_a"] for r in rows], dtype=float)
+    wb = np.array([r["win_bt_b"] for r in rows], dtype=float)
+    wok = np.isfinite(wa) & np.isfinite(wb)
+    w_bias = float(np.mean(wb[wok & tight] - wa[wok & tight]))
+    w_rmse = float(np.sqrt(np.mean((wb[wok & tight] - wa[wok & tight]) ** 2)))
+    w_r = float(np.corrcoef(wa[wok & tight], wb[wok & tight])[0, 1])
+    print(f"window ({WINDOW_UM[0]:g}-{WINDOW_UM[1]:g} um) BT, tight subset: "
+          f"bias {w_bias:+.2f} K, rmse {w_rmse:.2f} K, r = {w_r:+.3f}")
+
+    # reference wavelength / NEdR (scene-averaged) on instrument a's channels
+    wl_ref = np.nanmean(np.where(srfs[sat_a]["bitflags"] == 0,
+                                 srfs[sat_a]["mean_wl"], np.nan), axis=1)
+    nedr_comb = np.sqrt(
+        np.nanmean(np.where(srfs[sat_a]["bitflags"] == 0,
+                            srfs[sat_a]["nedr"], np.nan), axis=1) ** 2
+        + np.nanmean(np.where(srfs[sat_b]["bitflags"] == 0,
+                              srfs[sat_b]["nedr"], np.nan), axis=1) ** 2)
+
+    out = {
+        "year": args.year, "month": args.month, "sats": [sat_a, sat_b],
+        "n_shared": len(shared), "sky_counts": n_sky,
+        "max_dt_h": args.max_dt, "n_tight": int(tight.sum()),
+        "tight_mean_dbt_k": round(float(np.mean(samples_t)), 3),
+        "tight_rmse_k": round(float(np.sqrt(np.mean(samples_t ** 2))), 3),
+        "window_bias_k": round(w_bias, 3), "window_rmse_k": round(w_rmse, 3),
+        "window_r": round(w_r, 4),
+        "channel": {
+            "wavelen_um": [None if not np.isfinite(v) else round(float(v), 4)
+                           for v in wl_ref],
+            "mean_dwl_um": [None if not np.isfinite(v) else round(float(v), 4)
+                            for v in np.nanmean(dwl, axis=0)],
+            "mean_dbt_tight_k": [None if not np.isfinite(v) else round(float(v), 3)
+                                 for v in mean_t],
+            "std_dbt_tight_k": [None if not np.isfinite(v) else round(float(v), 3)
+                                for v in std_t],
+            "n_tight": [int(v) for v in n_t],
+            "mean_dbt_all_k": [None if not np.isfinite(v) else round(float(v), 3)
+                               for v in mean_all],
+            "n_all": [int(v) for v in n_all],
+        },
+    }
+    jpath = (pbt_dir(cfg, args.year, args.month) /
+             f"compare_sat{sat_a}{sat_b}_{args.year:04d}{args.month:02d}.json")
+    jpath.write_text(json.dumps(out, indent=1))
+    print(f"wrote {jpath}")
+
+    # figure: mean spectra, per-channel difference, window-BT scatter
+    apply_agu_style()
+    fig, axes = plt.subplots(1, 3, figsize=(13.4, 3.9),
+                             gridspec_kw={"width_ratios": [3, 3, 2.2]})
+    C_A, C_B = "#0072B2", "#D55E00"
+
+    tight_rows = [r for r, t in zip(rows, tight) if t]
+    sp_a = np.nanmean(np.array([r["bt_a"] for r in tight_rows]), axis=0)
+    sp_b = np.nanmean(np.array([r["bt_b"] for r in tight_rows]), axis=0)
+    wl_b_ref = np.nanmean(np.where(srfs[sat_b]["bitflags"] == 0,
+                                   srfs[sat_b]["mean_wl"], np.nan), axis=1)
+    axes[0].plot(wl_ref, sp_a, "o-", ms=2.8, lw=0.7, color=C_A,
+                 label=f"TIRS{sat_a}")
+    axes[0].plot(wl_b_ref, sp_b, "s-", ms=2.6, lw=0.7, color=C_B,
+                 label=f"TIRS{sat_b}")
+    axes[0].set_ylabel("mean observed BT (K)")
+    axes[0].legend()
+    axes[0].set_title(f"{len(tight_rows)} shared columns, "
+                      f"|$\\Delta$t| $\\leq$ {args.max_dt:g} h", fontsize=8)
+
+    axes[1].fill_between(wl_ref, -nedr_comb, nedr_comb, color="0.85",
+                         label="combined NEdR (1 footprint)")
+    axes[1].fill_between(wl_ref, mean_t - std_t, mean_t + std_t,
+                         color=C_B, alpha=0.25, lw=0,
+                         label="$\\pm1\\sigma$ across columns")
+    axes[1].plot(wl_ref, mean_t, "o-", ms=2.8, lw=0.9, color=C_B,
+                 label=f"mean BT$_{{{sat_b}}}$ $-$ BT$_{{{sat_a}}}$")
+    axes[1].axhline(0, color="k", lw=0.7, ls="--")
+    axes[1].set_ylabel(f"BT$_{{TIRS{sat_b}}}$ $-$ BT$_{{TIRS{sat_a}}}$ (K)")
+    axes[1].legend(fontsize=6.4)
+
+    sky_marker = {"clear": ("o", "#009E73"), "partial": ("^", "0.55"),
+                  "overcast": ("s", "#56B4E9")}
+    for sky, (mk, color) in sky_marker.items():
+        sel = [i for i, r in enumerate(rows)
+               if tight[i] and r["sky"] == sky and wok[i]]
+        if sel:
+            axes[2].plot(wa[sel], wb[sel], mk, ms=3.2, mfc="none",
+                         color=color, label=sky)
+    lim = [np.nanmin(np.r_[wa[wok & tight], wb[wok & tight]]) - 2,
+           np.nanmax(np.r_[wa[wok & tight], wb[wok & tight]]) + 2]
+    axes[2].plot(lim, lim, "k--", lw=0.7)
+    axes[2].set_xlim(lim), axes[2].set_ylim(lim)
+    axes[2].set_xlabel(f"TIRS{sat_a} window BT (K)")
+    axes[2].set_ylabel(f"TIRS{sat_b} window BT (K)")
+    axes[2].set_title(f"{WINDOW_UM[0]:g}-{WINDOW_UM[1]:g} um: bias "
+                      f"{w_bias:+.2f} K, rmse {w_rmse:.2f} K, r={w_r:+.3f}",
+                      fontsize=8)
+    axes[2].legend(fontsize=6.4, loc="upper left")
+    for k, ax in enumerate(axes[:2]):
+        ax.set_xlabel("wavelength (µm)")
+        ax.set_xlim(3.5, 30.0)
+    for k, ax in enumerate(axes):
+        panel_label(ax, chr(97 + k))
+    fig.suptitle(f"PREFIRE TIRS{sat_a} vs TIRS{sat_b} — shared scenes, "
+                 f"{args.year:04d}-{args.month:02d} "
+                 f"({source_label(cfg)} cells/states)", y=1.02, fontsize=10)
+    fig.tight_layout()
+    fpath = (figures_dir(cfg) /
+             f"prefire_sat{sat_a}_vs_sat{sat_b}_{args.year:04d}{args.month:02d}.png")
+    fig.savefig(fpath, dpi=300, bbox_inches="tight")
+    print(f"wrote {fpath}")
+    return 0
+
+
+# ---------------------------------------------------------------- stats
+
+def cmd_stats(args) -> int:
+    """Aggregate sim - obs BT statistics over the simulated test columns.
+
+    Clear columns carry the headline numbers (per-channel bias spectrum,
+    overall bias/rmse, breakdown by analysis hour — cf. the stage-7c
+    synoptic-increment finding); overcast columns are listed separately since
+    their mismatch is dominated by cloud placement, not radiometry.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from reanlib.plotstyle import apply_agu_style, panel_label
+
+    cfg = load_config(args.config, source=args.source)
+    mpath = manifest_path(cfg, args.year, args.month, args.sat)
+    rpath = results_path(cfg, args.year, args.month, args.sat)
+    for p in (mpath, rpath):
+        if not p.exists():
+            sys.exit(f"missing {p} — run the earlier stages first")
+    manifest = json.loads(mpath.read_text())
+    results = json.loads(rpath.read_text())
+    srf = load_srf(manifest["srf_file"])
+    wl_ref = np.nanmean(np.where(srf["bitflags"] == 0, srf["mean_wl"],
+                                 np.nan), axis=1)
+
+    per_col = []          # {label, sky, hour, d (channel,), mean, n}
+    missing = []
+    for col in manifest["columns"]:
+        vname = jacobian_variant(col)
+        res = results.get(col["label"], {}).get(vname)
+        if not res or "bt" not in res:
+            missing.append(col["label"])
+            continue
+        d_scenes = []
+        for sc_str, obs in col["obs_bt"].items():
+            sim = res["bt"].get(sc_str)
+            if not sim:
+                continue
+            obs = np.array([np.nan if v is None else v for v in obs])
+            simv = np.array([np.nan if v is None else v for v in sim])
+            d_scenes.append(simv - obs)
+        if not d_scenes:
+            missing.append(col["label"])
+            continue
+        d = np.nanmean(np.array(d_scenes), axis=0)
+        per_col.append({
+            "label": col["label"], "sky": col["sky"],
+            "hour": dt.datetime.fromisoformat(col["etime"]).hour,
+            "mean_dt_h": col.get("mean_dt_h"),
+            "d": d, "mean": float(np.nanmean(d)),
+            "n_ch": int(np.isfinite(d).sum()),
+        })
+    if missing:
+        print(f"note: {len(missing)} manifest column(s) without simulated BT "
+              f"(run `run` first): {missing[:6]}{' ...' if len(missing) > 6 else ''}")
+    if not per_col:
+        sys.exit("no simulated columns with results — nothing to aggregate")
+
+    def agg(cols):
+        d = np.array([c["d"] for c in cols])
+        flat = d[np.isfinite(d)]
+        return (float(np.mean(flat)), float(np.sqrt(np.mean(flat ** 2))),
+                flat.size, d)
+
+    clear = [c for c in per_col if c["sky"] == "clear"]
+    over = [c for c in per_col if c["sky"] == "overcast"]
+    print(f"{len(per_col)} simulated columns with results: "
+          f"{len(clear)} clear, {len(over)} overcast")
+
+    summary = {"year": args.year, "month": args.month, "sat": args.sat,
+               "source": cfg["source"], "n_clear": len(clear),
+               "n_overcast": len(over)}
+    if clear:
+        bias, rmse, n, d_clear = agg(clear)
+        print(f"CLEAR  sim - obs: {bias:+.2f} K bias, {rmse:.2f} K rmse "
+              f"({len(clear)} columns, {n} channel samples)")
+        summary["clear"] = {"bias_k": round(bias, 3), "rmse_k": round(rmse, 3),
+                            "n_samples": n}
+        by_hour = {}
+        for h in sorted({c["hour"] for c in clear}):
+            hb, hr, hn, _ = agg([c for c in clear if c["hour"] == h])
+            nc = sum(1 for c in clear if c["hour"] == h)
+            by_hour[str(h)] = {"bias_k": round(hb, 3), "rmse_k": round(hr, 3),
+                               "n_columns": nc}
+            print(f"  {h:02d}Z: {hb:+.2f} K bias, {hr:.2f} K rmse "
+                  f"({nc} columns)")
+        summary["clear"]["by_hour"] = by_hour
+        with np.errstate(invalid="ignore"):
+            ch_mean = np.nanmean(d_clear, axis=0)
+            ch_std = np.nanstd(d_clear, axis=0)
+        summary["clear"]["channel"] = {
+            "wavelen_um": [None if not np.isfinite(v) else round(float(v), 4)
+                           for v in wl_ref],
+            "mean_k": [None if not np.isfinite(v) else round(float(v), 3)
+                       for v in ch_mean],
+            "std_k": [None if not np.isfinite(v) else round(float(v), 3)
+                      for v in ch_std],
+        }
+    if over:
+        ob, orm, on, _ = agg(over)
+        print(f"OVERCAST sim - obs: {ob:+.2f} K bias, {orm:.2f} K rmse "
+              f"({len(over)} columns) — cloud placement, see per-column list")
+        for c in over:
+            print(f"  {c['label']}: {c['mean']:+.2f} K mean over "
+                  f"{c['n_ch']} channels")
+        summary["overcast"] = {"bias_k": round(ob, 3), "rmse_k": round(orm, 3),
+                               "per_column": {c["label"]: round(c["mean"], 3)
+                                              for c in over}}
+
+    spath = (pbt_dir(cfg, args.year, args.month) /
+             f"stats_{args.year:04d}{args.month:02d}_sat{args.sat}.json")
+    spath.write_text(json.dumps(summary, indent=1))
+    print(f"wrote {spath}")
+
+    if not clear:
+        return 0
+
+    apply_agu_style()
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.9),
+                             gridspec_kw={"width_ratios": [3, 2]})
+    C_CLR = "#0072B2"
+    axes[0].fill_between(wl_ref, ch_mean - ch_std, ch_mean + ch_std,
+                         color=C_CLR, alpha=0.25, lw=0,
+                         label="$\\pm1\\sigma$ across columns")
+    axes[0].plot(wl_ref, ch_mean, "o-", ms=2.8, lw=0.9, color=C_CLR,
+                 label="mean sim $-$ obs")
+    axes[0].axhline(0, color="k", lw=0.7, ls="--")
+    axes[0].set_xlim(3.5, 30.0)
+    axes[0].set_xlabel("wavelength (µm)")
+    axes[0].set_ylabel("clear-sky sim $-$ obs BT (K)")
+    axes[0].legend(fontsize=6.5)
+    axes[0].set_title(f"{len(clear)} clear columns", fontsize=8)
+
+    rng = np.random.default_rng(0)
+    for sky, cols_s, color, mk in (("overcast", over, "0.6", "x"),
+                                   ("clear", clear, C_CLR, "o")):
+        if not cols_s:
+            continue
+        h = np.array([c["hour"] for c in cols_s], dtype=float)
+        h += rng.uniform(-0.55, 0.55, h.size)
+        axes[1].plot(h, [c["mean"] for c in cols_s], mk, ms=3.4,
+                     mfc="none" if mk == "o" else None, color=color,
+                     label=sky, ls="none")
+    for h in sorted({c["hour"] for c in clear}):
+        vals = [c["mean"] for c in clear if c["hour"] == h]
+        axes[1].plot([h - 0.8, h + 0.8], [np.mean(vals)] * 2, "-", lw=1.6,
+                     color="#D55E00")
+    axes[1].axhline(0, color="k", lw=0.7, ls="--")
+    axes[1].set_xticks(sorted({c["hour"] for c in per_col}))
+    axes[1].set_xlabel("analysis hour (UTC)")
+    axes[1].set_ylabel("column-mean sim $-$ obs BT (K)")
+    axes[1].legend(fontsize=6.5)
+    for k, ax in enumerate(axes):
+        panel_label(ax, chr(97 + k))
+    fig.suptitle(f"PREFIRE TIRS{args.sat} vs {source_label(cfg)} sim — "
+                 f"{args.year:04d}-{args.month:02d}", y=1.02, fontsize=10)
+    fig.tight_layout()
+    fpath = (figures_dir(cfg) /
+             f"prefire_bt_stats_{args.year:04d}{args.month:02d}"
+             f"_sat{args.sat}.png")
+    fig.savefig(fpath, dpi=300, bbox_inches="tight")
+    print(f"wrote {fpath}")
+    return 0
+
+
 # ---------------------------------------------------------------- figure
 
 def cmd_figure(args) -> int:
@@ -1383,6 +1795,26 @@ def main(argv=None) -> int:
     sp = sub.add_parser("figure", help="BT spectra + Jacobian heatmaps")
     add_common(sp)
     sp.set_defaults(func=cmd_figure)
+
+    sp = sub.add_parser("compare",
+                        help="TIRS1 vs TIRS2 obs on shared (cell, hour) "
+                             "columns (era5 env)")
+    sp.add_argument("--year", type=int, required=True)
+    sp.add_argument("--month", type=int, required=True)
+    sp.add_argument("--sats", type=int, nargs=2, default=[1, 2],
+                    metavar=("A", "B"),
+                    help="satellite pair; differences are B - A (default 1 2)")
+    sp.add_argument("--max-dt", type=float, default=1.0,
+                    help="max |obs-time difference| (h) for the tight subset")
+    sp.add_argument("--source", default=None, choices=list(SOURCES))
+    sp.add_argument("--config", default=None)
+    sp.set_defaults(func=cmd_compare)
+
+    sp = sub.add_parser("stats",
+                        help="aggregate sim - obs statistics over the "
+                             "simulated columns (era5 env)")
+    add_common(sp)
+    sp.set_defaults(func=cmd_stats)
 
     args = parser.parse_args(argv)
     return args.func(args)

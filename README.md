@@ -898,6 +898,8 @@ conda activate er3t_env && python src/prefire_bt.py run       --year 2025 --mont
 conda activate era5     && python src/prefire_bt.py rrtmg     --year 2025 --month 1 --sat 1
 conda activate er3t_env && python src/prefire_bt.py jacobian  --year 2025 --month 1 --sat 1 --simulator lrt
 conda activate era5     && python src/prefire_bt.py figure    --year 2025 --month 1 --sat 1
+conda activate era5     && python src/prefire_bt.py stats     --year 2025 --month 1 --sat 1
+conda activate era5     && python src/prefire_bt.py compare   --year 2025 --month 1 --sats 1 2
 ```
 
 - **collocate** maps every good-quality footprint to its reanalysis cell and
@@ -905,7 +907,9 @@ conda activate era5     && python src/prefire_bt.py figure    --year 2025 --mont
   → ≤ 3 h offset, 3-hourly for MERRA-2 → ≤ 1.5 h; `--cadence` overrides)
   and picks a test set of clear and single-class overcast columns; partially
   cloudy columns are excluded because BT does not blend linearly across a
-  broken scene. All subcommands accept `--source merra2`; MERRA-2 sky
+  broken scene. EVERY column (not just the test set) stores its per-scene
+  mean observed BT, viewing angle and mean obs time, so the cross-instrument
+  comparison below is independent of the test-set pick. All subcommands accept `--source merra2`; MERRA-2 sky
   classification uses the stage-7 screens (M2T1NXRAD `CLDTOT` for overcast,
   condensate-only for clear) since M2I3NPASM has no per-level cloud
   fraction — so the day's `rad` file must be downloaded too.
@@ -930,6 +934,20 @@ conda activate era5     && python src/prefire_bt.py figure    --year 2025 --mont
   prototyping); `--simulator lrt` gives the channel-resolved K for the
   planned cloud-property retrieval (future validation target: collocated
   EarthCARE cloud products, which need an ESA EO account).
+- **stats** aggregates sim − obs over all simulated columns: clear-sky
+  per-channel bias spectrum (±1σ across columns), overall bias/rmse, and a
+  breakdown by analysis hour (cf. the stage-7c synoptic-increment finding);
+  overcast columns are listed per column since their mismatch is cloud
+  placement, not radiometry
+  (`figures/<source>/prefire_bt_stats_YYYYMM_satN.png` +
+  a `stats_*.json` next to the manifest).
+- **compare** cross-checks the two instruments on shared (cell, state-hour)
+  columns — the same reanalysis cell observed by both satellites. Channels
+  are matched by wavelength (each TIRS has its own registration, so channel
+  indices do not correspond), and headline statistics use the subset with
+  obs times within `--max-dt` (default 1 h) of each other, since outside
+  that real atmospheric change enters the difference
+  (`figures/<source>/prefire_sat1_vs_sat2_YYYYMM.png` + `compare_*.json`).
 
 A `cotscan` subcommand (er3t_env) reproduces the ARCSIX-style
 BT-vs-cloud-optical-thickness sensitivity figure with PREFIRE channels: a
@@ -962,6 +980,33 @@ MERRA-2 results (same day, SAT1, coarse + `--ic-properties baum`,
 while the 12 UTC clear column sits +6.2 K warm (synoptic analysis time; cf.
 the stage-7c ERA5 finding). Overcast columns scatter −7…−11 K (MERRA-2
 cloud placement vs the real scene, as for ERA5).
+
+**Extended clear-sky statistics** (2025-01-01…07, SAT1, ERA5, coarse,
+30 clear + 10 overcast columns): clear-sky **sim − obs = +4.20 K bias,
+5.48 K rmse** over 627 (column, channel) samples — the 3-column pilot's
+≈+5 K holds over a 10× larger sample. The bias is spectrally structured:
++4…+8 K in the 8–13 µm window (peaking near 11–12 µm, the warm-skin
+signature), +2…+5.5 K across the far-IR dirty window, and −1…−3 K in the
+5 µm channels. By analysis hour: +4.8 K (06 UTC, 25 columns), +3.5 K
+(12 UTC, 3), −0.3 K (18 UTC, 1), −5.0 K (00 UTC, 1) — the footprint-count
+selection concentrates columns at 06 UTC, so the hour dependence is
+suggestive rather than settled. Overcast: −11.1 K mean / 11.9 K rmse
+(cloud placement). `figures/era5/prefire_bt_stats_202501_sat1.png`.
+
+**SAT2 / TIRS2** (2025-01-01, same chain with `--sat 2`): TIRS2 delivers
+~20× fewer best-quality spectra than TIRS1 poleward of 80°N — 97 % of its
+in-domain spectral samples carry the fill quality flag (vs 21 % best-quality
+for TIRS1), usable footprints cluster in cross-track scenes 6–7, and usable
+channels start near 5 µm — so the same day yields 235 columns against
+TIRS1's ~19,900. Its 3 clear columns close at **+3.9 K bias / 4.6 K rmse**
+vs the ERA5 sim: the same warm bias as TIRS1, from an independent
+radiometer. The direct cross-check (`compare`) finds 93 shared
+(cell, hour) columns, 8 of them with obs times within 1 h; on those,
+**BT₂ − BT₁ = +0.85 K mean / 2.50 K rmse** over 154 wavelength-matched
+channel samples, and 10–12 µm window BT agrees to **+0.44 K bias, 1.64 K
+rmse, r = +0.993**. TIRS2 runs ~+1–3 K brighter through the far-IR
+(17–26 µm), within the across-column σ there.
+`figures/era5/prefire_sat1_vs_sat2_202501.png`.
 
 ## Notes on surface fluxes
 

@@ -172,13 +172,41 @@ the README. Update this file when a stage lands or a plan changes.
       under-resolves far-IR channels (3–9 cm⁻¹ wide); science-grade BT and
       K need `reptran fine` on CURC (`slurm/curc_prefire_bt.sh`; NEVER
       fine/medium locally — OOM). Sync `derived/YYYY/MM/prefire_bt/` first.
-- [ ] **Extend PREFIRE collocation** — more January 2025 days (ERA5
-      download for the extra days; optionally hourly `--hours` at overpass
-      times to shrink the ≤3 h state-time offset), then statistics over
-      many clear columns instead of 3.
-- [ ] **SAT2 / TIRS2 set** — rerun collocate→figure with `--sat 2`
-      (second wavelength registration); compare the two instruments on
-      shared scenes.
+- [x] **Extend PREFIRE collocation** — DONE for 2025-01-01…07 (ERA5 +
+      SAT1 granules days 2-7 downloaded; 142,145 (cell, hour) columns,
+      14,512 clear). New `stats` subcommand aggregates sim − obs; the
+      week-wide test set (30 clear + 10 overcast, coarse) gives clear-sky
+      +4.20 K bias / 5.48 K rmse over 627 channel samples (pilot ≈+5 K
+      confirmed at 10× the sample), bias peaking +4…+8 K in the 8-13 µm
+      window and −1…−3 K at 5 µm; by hour +4.8 (06Z, 25 cols) / +3.5 (12Z)
+      / −0.3 (18Z, 1) / −5.0 (00Z, 1) — hour spread is thin because the
+      footprint-count selection concentrates 06Z, so the stage-7c-style
+      hour story needs a deliberately hour-stratified test set (open).
+      Overcast −11.1 K (cloud placement). Collocation JSON now stores
+      per-scene mean obs BT / vza / mean obs time for EVERY column.
+      Extending to the full month is a rerun of the same commands.
+- [x] **SAT2 / TIRS2 set** — DONE (2025-01-01, full chain with `--sat 2`,
+      + new `compare` subcommand). KEY DATA FACT: TIRS2 grants ~20× fewer
+      best-quality spectra than TIRS1 above 80°N (97 % of in-domain samples
+      are fill-flagged, usable footprints sit in scenes 6-7, channels start
+      ~5 µm) → 235 columns vs ~19,900. Its 3 clear columns close at
+      +3.9 K / 4.6 K rmse vs the ERA5 sim — same warm bias as TIRS1 from an
+      independent radiometer. Instrument cross-check on 93 shared
+      (cell, hour) columns (channels wavelength-matched across the two
+      registrations; 8 columns with obs within 1 h): BT2 − BT1 =
+      +0.85 K / 2.50 K rmse; 10-12 µm window +0.44 K, rmse 1.64 K,
+      r = +0.993; TIRS2 ~+1-3 K brighter in the far-IR, within the
+      across-column σ.
+- [ ] **Stage-8 with CARRA-2 columns** — the DATA is now on disk:
+      CARRA-2 Jan 2025 days 1-7 downloaded at all 8 analysis hours
+      (plev+sfc+cloud, 891×892 80-90N grid, cc/clwc/ciwc merged into the
+      plev files, tcc/lsm/siconc aboard sfc; verified well-formed). Code
+      still needed before `--source carra2` works in `prefire_bt.py`:
+      collocate assumes 1-D lat/lon (needs `grid.GridIndex` for the
+      projected grid) and prep reads `o3` from plev (CARRA-2 publishes
+      none — splice the afglsw climatology as `lrt_sim.py` already does
+      for stage 7). 3-hourly states would halve the ERA5 state-time
+      offset, on a 2.5 km grid.
 - [ ] **Averaging kernels + DOF from the existing K files** — no new
       simulations needed: per column compute
       A = (Kᵀ S_e⁻¹ K + S_a⁻¹)⁻¹ Kᵀ S_e⁻¹ K from the `jacobian_*.nc`
