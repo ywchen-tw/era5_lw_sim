@@ -61,10 +61,11 @@ from reanlib.config import (REPO_ROOT, SOURCES, figures_dir, load_config,
                             monthly_path, plev_path, sfc_path, source_label,
                             state_cadence_h)
 from reanlib.fluxes import load_cldtot
+from reanlib.grid import GridIndex, hdims
 from reanlib.io_era5 import open_era5
 from lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM,
-                          build_profile_files, load_cams_profiles,
-                          write_cloud_file)
+                          afglsw_o3_mmr, build_profile_files,
+                          load_cams_profiles, write_cloud_file)
 from prefire_download import srf_path
 
 G0 = 9.80665
@@ -180,6 +181,13 @@ def obs_channel_bt_to_rad(srf: dict, scene: int, bt: np.ndarray) -> np.ndarray:
 
 # ---------------------------------------------------------------- collocate
 
+#: reject a footprint whose nearest in-domain cell is farther than this —
+#: within any source's grid the true match is at most half a cell away
+#: (ERA5 ~14 km, MERRA-2 ~31 km, CARRA-2 ~1.8 km), so a large distance means
+#: the footprint fell outside the file's domain mask
+MAX_MATCH_KM = 50.0
+
+
 def granule_files(cfg, year, month, sat) -> "list[str]":
     pat = str(Path(cfg["paths"]["data"]) / "prefire" / f"{year:04d}" /
               f"{month:02d}" / f"PREFIRE_SAT{sat}_1B-RAD_*.nc")
@@ -200,6 +208,7 @@ def cmd_collocate(args) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rean_cache = {}
+    gidx_cache = {}
 
     def rean_day(date):
         if date not in rean_cache:
@@ -207,8 +216,14 @@ def cmd_collocate(args) -> int:
             rean_cache[date] = open_era5(p) if p.exists() else None
         return rean_cache[date]
 
+    def grid_index(date):
+        if date not in gidx_cache:
+            ds = rean_day(date)
+            gidx_cache[date] = None if ds is None else GridIndex(ds)
+        return gidx_cache[date]
+
     groups = {}          # (etime iso, iy, ix) -> footprint list
-    n_seen = n_dom = n_norean = 0
+    n_seen = n_dom = n_norean = n_far = 0
     print(f"snapping footprints to {lab} states every {cad} h")
     for fn in files:
         ds = nc.Dataset(fn)
@@ -232,17 +247,18 @@ def cmd_collocate(args) -> int:
             if plev is None or np.datetime64(et) not in plev["valid_time"].values:
                 n_norean += 1
                 continue
-            lats = plev["latitude"].values
-            lons = plev["longitude"].values
+            idx = grid_index(et.date())
             for sc in range(N_SCENE):
                 if not np.isfinite(lat[ia, sc]) or lat[ia, sc] < south:
                     continue
                 if not np.any(np.isfinite(bt[ia, sc])):
                     continue
                 n_dom += 1
-                iy = int(np.abs(lats - lat[ia, sc]).argmin())
-                dlon = (lons - lon[ia, sc] + 180.0) % 360.0 - 180.0
-                ix = int(np.abs(dlon).argmin())
+                (iy, ix), dist_km = idx.query(float(lat[ia, sc]),
+                                              float(lon[ia, sc]))
+                if dist_km > MAX_MATCH_KM:
+                    n_far += 1
+                    continue
                 key = (et.isoformat(), iy, ix)
                 groups.setdefault(key, []).append({
                     "granule": os.path.basename(fn), "atrack": int(ia),
@@ -256,8 +272,8 @@ def cmd_collocate(args) -> int:
         print(f"  {os.path.basename(fn)}: cumulative {len(groups)} columns")
 
     print(f"{n_seen} footprints scanned, {n_dom} in-domain with good BT, "
-          f"{n_norean} skipped (no {lab} state), {len(groups)} unique "
-          f"(cell, hour) columns")
+          f"{n_norean} skipped (no {lab} state), {n_far} outside the "
+          f"{lab} domain, {len(groups)} unique (cell, hour) columns")
 
     # classify sky per column from the reanalysis column, then pick the test
     # set. MERRA-2 has no instantaneous per-level cloud fraction: cc_max is
@@ -271,60 +287,70 @@ def cmd_collocate(args) -> int:
         return cldtot_cache[et]
 
     epoch = dt.datetime(1970, 1, 1)
+    by_state = {}
+    for (et_iso, iy, ix), fps in groups.items():
+        by_state.setdefault(et_iso, []).append((iy, ix, fps))
+
     columns = []
-    for (et_iso, iy, ix), fps in sorted(groups.items()):
+    for et_iso in sorted(by_state):
         et = dt.datetime.fromisoformat(et_iso)
         plev = rean_day(et.date())
-        p5 = plev.sel(valid_time=et).transpose("pressure_level", "latitude",
-                                               "longitude")
+        p5 = plev.sel(valid_time=et).transpose("pressure_level", *hdims(plev))
         p = p5["pressure_level"].values.astype(float)
-        clwc = p5["clwc"].values[:, iy, ix].astype(float)
-        ciwc = p5["ciwc"].values[:, iy, ix].astype(float)
         p_pa_asc = p[::-1] * 100.0
-        lwp = float(TRAPZ(np.nan_to_num(clwc[::-1]), x=p_pa_asc) / G0 * 1e3)
-        iwp = float(TRAPZ(np.nan_to_num(ciwc[::-1]), x=p_pa_asc) / G0 * 1e3)
-        has_cc = "cc" in p5
-        if has_cc:
-            cc_max = float(np.nanmax(p5["cc"].values[:, iy, ix]))
-        else:
-            cc_max = float(cldtot_at(et)[iy, ix])
-        twp = lwp + iwp
-        if (cc_max <= 0.01 and twp <= 1.0) if has_cc else (twp <= 0.01):
-            sky = "clear"
-        elif cc_max >= 0.99 and twp > 1.0:
-            sky = "overcast"
-        else:
-            sky = "partial"
-        # per-scene mean observed BT + mean obs time for EVERY column (scenes
-        # have distinct wavelength registrations), so cross-instrument
-        # comparison on shared scenes does not depend on the test-set pick
-        scenes = {}
-        for f in fps:
-            scenes.setdefault(f["scene"], []).append(
-                [np.nan if v is None else v for v in f["bt"]])
-        obs_bt = {}
-        for sc, vv in sorted(scenes.items()):
-            m = np.nanmean(np.array(vv, dtype=float), axis=0)
-            obs_bt[str(sc)] = [None if not np.isfinite(v)
-                               else round(float(v), 3) for v in m]
-        tsec = float(np.mean(
-            [(dt.datetime.fromisoformat(f["time"]) - epoch).total_seconds()
-             for f in fps]))
-        columns.append({
-            "label": f"{et:%Y%m%dT%H}Z_{iy:02d}_{ix:03d}",
-            "etime": et_iso, "iy": iy, "ix": ix,
-            "lat": float(p5["latitude"].values[iy]),
-            "lon": float(p5["longitude"].values[ix]),
-            "sky": sky, "cc_max": cc_max, "lwp_g": lwp, "iwp_g": iwp,
-            "n_footprints": len(fps),
-            "mean_dt_h": float(np.mean(
-                [abs((dt.datetime.fromisoformat(f["time"]) - et)
-                     .total_seconds()) / 3600.0 for f in fps])),
-            "mean_time": (epoch + dt.timedelta(seconds=tsec)).isoformat(),
-            "vza": float(np.mean([f["vza"] for f in fps])),
-            "obs_bt": obs_bt,
-            "footprints": fps,
-        })
+        # materialize the state's cloud fields ONCE: per-column reads would
+        # decompress the same chunks ~10^5 times over a CARRA-2 grid
+        clwc3 = p5["clwc"].values
+        ciwc3 = p5["ciwc"].values
+        cc3 = p5["cc"].values if "cc" in p5 else None
+        cld2 = cldtot_at(et) if cc3 is None else None
+        idx = grid_index(et.date())
+        for iy, ix, fps in sorted(by_state[et_iso], key=lambda t: t[:2]):
+            clwc = clwc3[:, iy, ix].astype(float)
+            ciwc = ciwc3[:, iy, ix].astype(float)
+            lwp = float(TRAPZ(np.nan_to_num(clwc[::-1]), x=p_pa_asc) / G0 * 1e3)
+            iwp = float(TRAPZ(np.nan_to_num(ciwc[::-1]), x=p_pa_asc) / G0 * 1e3)
+            if cc3 is not None:
+                cc_max = float(np.nanmax(cc3[:, iy, ix]))
+            else:
+                cc_max = float(cld2[iy, ix])
+            twp = lwp + iwp
+            if (cc_max <= 0.01 and twp <= 1.0) if cc3 is not None else (twp <= 0.01):
+                sky = "clear"
+            elif cc_max >= 0.99 and twp > 1.0:
+                sky = "overcast"
+            else:
+                sky = "partial"
+            # per-scene mean observed BT + mean obs time for EVERY column
+            # (scenes have distinct wavelength registrations), so
+            # cross-instrument comparison does not depend on the test-set pick
+            scenes = {}
+            for f in fps:
+                scenes.setdefault(f["scene"], []).append(
+                    [np.nan if v is None else v for v in f["bt"]])
+            obs_bt = {}
+            for sc, vv in sorted(scenes.items()):
+                m = np.nanmean(np.array(vv, dtype=float), axis=0)
+                obs_bt[str(sc)] = [None if not np.isfinite(v)
+                                   else round(float(v), 3) for v in m]
+            tsec = float(np.mean(
+                [(dt.datetime.fromisoformat(f["time"]) - epoch).total_seconds()
+                 for f in fps]))
+            glat, glon = idx.latlon(iy, ix)
+            columns.append({
+                "label": f"{et:%Y%m%dT%H}Z_{iy:02d}_{ix:03d}",
+                "etime": et_iso, "iy": iy, "ix": ix,
+                "lat": glat, "lon": glon,
+                "sky": sky, "cc_max": cc_max, "lwp_g": lwp, "iwp_g": iwp,
+                "n_footprints": len(fps),
+                "mean_dt_h": float(np.mean(
+                    [abs((dt.datetime.fromisoformat(f["time"]) - et)
+                         .total_seconds()) / 3600.0 for f in fps])),
+                "mean_time": (epoch + dt.timedelta(seconds=tsec)).isoformat(),
+                "vza": float(np.mean([f["vza"] for f in fps])),
+                "obs_bt": obs_bt,
+                "footprints": fps,
+            })
 
     n_sky = {s: sum(1 for c in columns if c["sky"] == s)
              for s in ("clear", "partial", "overcast")}
@@ -400,18 +426,25 @@ def cmd_prep(args) -> int:
                                      open_era5(sfc_path(cfg, et.date())))
         plev, sfc = rean_cache[et.date()]
         iy, ix = col["iy"], col["ix"]
-        p5 = plev.sel(valid_time=et).transpose("pressure_level", "latitude",
-                                               "longitude")
-        s5 = sfc.sel(valid_time=et)
+        dims = hdims(plev)
+        p5 = plev.sel(valid_time=et).transpose("pressure_level", *dims)
+        s5 = sfc.sel(valid_time=et).transpose(*dims)
         p = p5["pressure_level"].values.astype(float)
-        sp_hpa = float(s5["sp"].values[iy, ix]) / 100.0
-        t2m = float(s5["t2m"].values[iy, ix])
-        skt = float(s5["skt"].values[iy, ix])
+        # lazy per-cell slices: [iy, ix] BEFORE .values so the backend reads
+        # one column, not the full (level, y, x) field per selected column
+        sp_hpa = float(s5["sp"][iy, ix].values) / 100.0
+        t2m = float(s5["t2m"][iy, ix].values)
+        skt = float(s5["skt"][iy, ix].values)
         # above ground AND finite (MERRA-2 masks below-ground and marginal
         # near-surface levels to NaN; ERA5 extrapolates instead)
-        above = (p <= sp_hpa) & np.isfinite(p5["t"].values[:, iy, ix])
-        cols = {v: p5[v].values[above, iy, ix].astype(float)
-                for v in ("t", "q", "o3", "clwc", "ciwc")}
+        above = (p <= sp_hpa) & np.isfinite(p5["t"][:, iy, ix].values)
+        cols = {v: p5[v][:, iy, ix].values[above].astype(float)
+                for v in ("t", "q", "clwc", "ciwc")}
+        # CARRA-2 publishes no ozone: fall back to the subarctic-winter
+        # climatology, as stage 7 does — the profile splice above the model
+        # top is afglsw either way, so the ozone description stays seamless
+        cols["o3"] = (p5["o3"][:, iy, ix].values[above].astype(float)
+                      if "o3" in p5 else afglsw_o3_mmr(p[above]))
 
         label = col["label"]
         atm_file, ch4_file, keep, z_keep = build_profile_files(
@@ -1156,7 +1189,7 @@ def cmd_cotscan(args) -> int:
         ax.set_ylabel(ylab)
         if k > 0:
             ax.axhline(0, color="k", lw=0.8, ls="--")
-        panel_label(ax, chr(97 + k))
+        panel_label(ax, chr(97 + k), outside=True)
     axes[0].legend(fontsize=6.4, loc="best")
     fig.suptitle(
         f"TIRS{args.sat} scene {sc} — {args.phase} cloud, "
@@ -1383,7 +1416,7 @@ def cmd_compare(args) -> int:
         ax.set_xlabel("wavelength (µm)")
         ax.set_xlim(3.5, 30.0)
     for k, ax in enumerate(axes):
-        panel_label(ax, chr(97 + k))
+        panel_label(ax, chr(97 + k), outside=True)
     fig.suptitle(f"PREFIRE TIRS{sat_a} vs TIRS{sat_b} — shared scenes, "
                  f"{args.year:04d}-{args.month:02d} "
                  f"({source_label(cfg)} cells/states)", y=1.02, fontsize=10)
@@ -1497,15 +1530,27 @@ def cmd_stats(args) -> int:
                       for v in ch_std],
         }
     if over:
-        ob, orm, on, _ = agg(over)
+        ob, orm, on, d_over = agg(over)
         print(f"OVERCAST sim - obs: {ob:+.2f} K bias, {orm:.2f} K rmse "
               f"({len(over)} columns) — cloud placement, see per-column list")
         for c in over:
             print(f"  {c['label']}: {c['mean']:+.2f} K mean over "
                   f"{c['n_ch']} channels")
-        summary["overcast"] = {"bias_k": round(ob, 3), "rmse_k": round(orm, 3),
-                               "per_column": {c["label"]: round(c["mean"], 3)
-                                              for c in over}}
+        with np.errstate(invalid="ignore"):
+            ch_mean_o = np.nanmean(d_over, axis=0)
+            ch_std_o = np.nanstd(d_over, axis=0)
+        summary["overcast"] = {
+            "bias_k": round(ob, 3), "rmse_k": round(orm, 3),
+            "per_column": {c["label"]: round(c["mean"], 3) for c in over},
+            "channel": {
+                "wavelen_um": [None if not np.isfinite(v) else round(float(v), 4)
+                               for v in wl_ref],
+                "mean_k": [None if not np.isfinite(v) else round(float(v), 3)
+                           for v in ch_mean_o],
+                "std_k": [None if not np.isfinite(v) else round(float(v), 3)
+                          for v in ch_std_o],
+            },
+        }
 
     spath = (pbt_dir(cfg, args.year, args.month) /
              f"stats_{args.year:04d}{args.month:02d}_sat{args.sat}.json")
@@ -1516,20 +1561,34 @@ def cmd_stats(args) -> int:
         return 0
 
     apply_agu_style()
-    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.9),
-                             gridspec_kw={"width_ratios": [3, 2]})
-    C_CLR = "#0072B2"
+    npan = 3 if over else 2
+    fig, axes = plt.subplots(1, npan, figsize=(4.6 * npan + 0.4, 3.9),
+                             gridspec_kw={"width_ratios": [3] * (npan - 1) + [2]})
+    C_CLR, C_OVC = "#0072B2", "#56B4E9"
+    ax_h = axes[-1]
+
     axes[0].fill_between(wl_ref, ch_mean - ch_std, ch_mean + ch_std,
                          color=C_CLR, alpha=0.25, lw=0,
                          label="$\\pm1\\sigma$ across columns")
     axes[0].plot(wl_ref, ch_mean, "o-", ms=2.8, lw=0.9, color=C_CLR,
                  label="mean sim $-$ obs")
-    axes[0].axhline(0, color="k", lw=0.7, ls="--")
-    axes[0].set_xlim(3.5, 30.0)
-    axes[0].set_xlabel("wavelength (µm)")
     axes[0].set_ylabel("clear-sky sim $-$ obs BT (K)")
-    axes[0].legend(fontsize=6.5)
     axes[0].set_title(f"{len(clear)} clear columns", fontsize=8)
+
+    if over:
+        axes[1].fill_between(wl_ref, ch_mean_o - ch_std_o,
+                             ch_mean_o + ch_std_o, color=C_OVC, alpha=0.25,
+                             lw=0, label="$\\pm1\\sigma$ across columns")
+        axes[1].plot(wl_ref, ch_mean_o, "s-", ms=2.8, lw=0.9, color=C_OVC,
+                     label="mean sim $-$ obs")
+        axes[1].set_ylabel("overcast sim $-$ obs BT (K)")
+        axes[1].set_title(f"{len(over)} overcast columns", fontsize=8)
+
+    for ax in axes[:-1]:
+        ax.axhline(0, color="k", lw=0.7, ls="--")
+        ax.set_xlim(3.5, 30.0)
+        ax.set_xlabel("wavelength (µm)")
+        ax.legend(fontsize=6.5)
 
     rng = np.random.default_rng(0)
     for sky, cols_s, color, mk in (("overcast", over, "0.6", "x"),
@@ -1538,20 +1597,22 @@ def cmd_stats(args) -> int:
             continue
         h = np.array([c["hour"] for c in cols_s], dtype=float)
         h += rng.uniform(-0.55, 0.55, h.size)
-        axes[1].plot(h, [c["mean"] for c in cols_s], mk, ms=3.4,
-                     mfc="none" if mk == "o" else None, color=color,
-                     label=sky, ls="none")
-    for h in sorted({c["hour"] for c in clear}):
-        vals = [c["mean"] for c in clear if c["hour"] == h]
-        axes[1].plot([h - 0.8, h + 0.8], [np.mean(vals)] * 2, "-", lw=1.6,
-                     color="#D55E00")
-    axes[1].axhline(0, color="k", lw=0.7, ls="--")
-    axes[1].set_xticks(sorted({c["hour"] for c in per_col}))
-    axes[1].set_xlabel("analysis hour (UTC)")
-    axes[1].set_ylabel("column-mean sim $-$ obs BT (K)")
-    axes[1].legend(fontsize=6.5)
+        ax_h.plot(h, [c["mean"] for c in cols_s], mk, ms=3.4,
+                  mfc="none" if mk == "o" else None, color=color,
+                  label=sky, ls="none")
+    # per-hour mean bar for each sky class (clear orange, overcast dark gray)
+    for cols_s, color in ((clear, "#D55E00"), (over, "0.35")):
+        for h in sorted({c["hour"] for c in cols_s}):
+            vals = [c["mean"] for c in cols_s if c["hour"] == h]
+            ax_h.plot([h - 0.8, h + 0.8], [np.mean(vals)] * 2, "-", lw=1.6,
+                      color=color)
+    ax_h.axhline(0, color="k", lw=0.7, ls="--")
+    ax_h.set_xticks(sorted({c["hour"] for c in per_col}))
+    ax_h.set_xlabel("analysis hour (UTC)")
+    ax_h.set_ylabel("column-mean sim $-$ obs BT (K)")
+    ax_h.legend(fontsize=6.5)
     for k, ax in enumerate(axes):
-        panel_label(ax, chr(97 + k))
+        panel_label(ax, chr(97 + k), outside=True)
     fig.suptitle(f"PREFIRE TIRS{args.sat} vs {source_label(cfg)} sim — "
                  f"{args.year:04d}-{args.month:02d}", y=1.02, fontsize=10)
     fig.tight_layout()
@@ -1563,7 +1624,127 @@ def cmd_stats(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- sources
+
+#: same source colour convention as mosaic_profiles.py
+SOURCE_COLOURS = {"era5": "#D55E00", "merra2": "#0072B2", "carra2": "#009E73"}
+
+
+def cmd_sources(args) -> int:
+    """Overlay the per-source clear-sky sim - obs statistics (era5 env).
+
+    Reads the ``stats_*.json`` written by `stats` for every source that has
+    one and draws the three bias spectra against the same TIRS channels, plus
+    a per-source summary panel. NOTE each source's statistics are over its
+    OWN test set: the selection rule is identical (top clear columns by
+    footprint count over the same granules), but cells, states and hence the
+    picked columns differ with the source's grid and cadence — that
+    resolution/state difference is part of what is being compared.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from reanlib.config import SOURCE_LABELS
+    from reanlib.plotstyle import apply_agu_style, panel_label
+
+    per_source = {}
+    for src in (args.sources or list(SOURCES)):
+        cfg = load_config(args.config, source=src)
+        p = (pbt_dir(cfg, args.year, args.month) /
+             f"stats_{args.year:04d}{args.month:02d}_sat{args.sat}.json")
+        if p.exists():
+            per_source[src] = json.loads(p.read_text())
+        else:
+            print(f"note: no {p} — run the {SOURCE_LABELS[src]} chain + "
+                  "`stats` first; skipping")
+    if not per_source:
+        sys.exit("no per-source stats files yet")
+
+    print(f"clear-sky sim - obs vs PREFIRE TIRS{args.sat}, "
+          f"{args.year:04d}-{args.month:02d}:")
+    for src, s in per_source.items():
+        c = s.get("clear")
+        if not c:
+            continue
+        hours = ", ".join(f"{h}Z:{v['bias_k']:+.1f}K(n={v['n_columns']})"
+                          for h, v in sorted(c.get("by_hour", {}).items(),
+                                             key=lambda kv: int(kv[0])))
+        print(f"  {SOURCE_LABELS[src]:8s} {c['bias_k']:+.2f} K bias, "
+              f"{c['rmse_k']:.2f} K rmse, {s['n_clear']} clear columns "
+              f"[{hours}]")
+        if "overcast" in s:
+            print(f"  {'':8s} overcast {s['overcast']['bias_k']:+.2f} K "
+                  f"({s['n_overcast']} columns)")
+
+    apply_agu_style()
+    fig, axes = plt.subplots(1, 2, figsize=(10.2, 3.9),
+                             gridspec_kw={"width_ratios": [3, 1.6]})
+    for src, s in per_source.items():
+        c = s.get("clear", {}).get("channel")
+        if not c:
+            continue
+        wl = np.array([np.nan if v is None else v for v in c["wavelen_um"]])
+        mean = np.array([np.nan if v is None else v for v in c["mean_k"]])
+        std = np.array([np.nan if v is None else v for v in c["std_k"]])
+        axes[0].fill_between(wl, mean - std, mean + std, lw=0, alpha=0.13,
+                             color=SOURCE_COLOURS[src])
+        axes[0].plot(wl, mean, "o-", ms=2.6, lw=0.9,
+                     color=SOURCE_COLOURS[src],
+                     label=(f"{SOURCE_LABELS[src]} "
+                            f"({s['n_clear']} cols, "
+                            f"{s['clear']['bias_k']:+.1f} K)"))
+    axes[0].axhline(0, color="k", lw=0.7, ls="--")
+    axes[0].set_xlim(3.5, 30.0)
+    axes[0].set_xlabel("wavelength (µm)")
+    axes[0].set_ylabel("clear-sky sim $-$ obs BT (K)")
+    axes[0].legend(fontsize=6.5)
+    axes[0].set_title("mean $\\pm1\\sigma$ across clear columns", fontsize=8)
+
+    xs = np.arange(len(per_source))
+    for k, (src, s) in enumerate(per_source.items()):
+        c, o = s.get("clear"), s.get("overcast")
+        if c:
+            axes[1].bar(k - 0.18, c["bias_k"], 0.32,
+                        color=SOURCE_COLOURS[src], label=None)
+            axes[1].errorbar(k - 0.18, c["bias_k"], yerr=c["rmse_k"],
+                             color="k", lw=0.9, capsize=2.5)
+        if o:
+            axes[1].bar(k + 0.18, o["bias_k"], 0.32,
+                        color=SOURCE_COLOURS[src], alpha=0.45)
+    axes[1].axhline(0, color="k", lw=0.7)
+    axes[1].set_xticks(xs)
+    axes[1].set_xticklabels([SOURCE_LABELS[s] for s in per_source],
+                            fontsize=7)
+    axes[1].set_ylabel("sim $-$ obs BT (K)")
+    axes[1].set_title("clear bias ± rmse (solid) /\novercast bias (faded)",
+                      fontsize=8)
+    for k, ax in enumerate(axes):
+        panel_label(ax, chr(97 + k), outside=True)
+    fig.suptitle(f"PREFIRE TIRS{args.sat} vs reanalysis-driven sims — "
+                 f"{args.year:04d}-{args.month:02d}", y=1.02, fontsize=10)
+    fig.tight_layout()
+    outdir = figures_dir(load_config(args.config,
+                                     source=next(iter(per_source)))).parent
+    fpath = outdir / (f"prefire_bt_sources_{args.year:04d}{args.month:02d}"
+                      f"_sat{args.sat}.png")
+    fig.savefig(fpath, dpi=300, bbox_inches="tight")
+    print(f"wrote {fpath}")
+    return 0
+
+
 # ---------------------------------------------------------------- figure
+
+def panel_letter(k: int) -> str:
+    """0 -> 'a' ... 25 -> 'z', 26 -> 'aa', ... — chr(97+k) walks into C1
+    control characters past 'z', which FreeType refuses to lay out."""
+    s = ""
+    k += 1
+    while k:
+        k, r = divmod(k - 1, 26)
+        s = chr(97 + r) + s
+    return s
+
 
 def cmd_figure(args) -> int:
     import matplotlib.pyplot as plt
@@ -1617,7 +1798,7 @@ def cmd_figure(args) -> int:
         ax.set_xlim(3.5, 30.0)
         ax.set_xlabel("wavelength (µm)")
         ax.set_ylabel("brightness temperature (K)")
-        panel_label(ax, chr(97 + k))
+        panel_label(ax, panel_letter(k), outside=True)
         ax.set_title(f"{col['label']} — {col['sky']}", fontsize=8)
         if k == 0:
             ax.legend(loc="lower right", fontsize=6.5)
@@ -1687,7 +1868,7 @@ def jacobian_figure(ds, col, sim):
     ax.set_title("scalar states", fontsize=9)
     ax.legend(fontsize=6)
     for i, ax in enumerate(axes):
-        panel_label(ax, chr(97 + i))
+        panel_label(ax, chr(97 + i), outside=True)
     fig.suptitle(f"{col['label']} ({col['sky']}) — {sim} Jacobian",
                  y=1.02, fontsize=10)
     fig.tight_layout()
@@ -1815,6 +1996,18 @@ def main(argv=None) -> int:
                              "simulated columns (era5 env)")
     add_common(sp)
     sp.set_defaults(func=cmd_stats)
+
+    sp = sub.add_parser("sources",
+                        help="overlay clear-sky sim - obs stats across "
+                             "sources (era5 env)")
+    sp.add_argument("--year", type=int, required=True)
+    sp.add_argument("--month", type=int, required=True)
+    sp.add_argument("--sat", type=int, default=1, choices=[1, 2])
+    sp.add_argument("--sources", nargs="+", default=None,
+                    choices=list(SOURCES),
+                    help="sources to include (default: all with stats files)")
+    sp.add_argument("--config", default=None)
+    sp.set_defaults(func=cmd_sources)
 
     args = parser.parse_args(argv)
     return args.func(args)

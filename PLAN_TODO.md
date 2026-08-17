@@ -197,16 +197,31 @@ the README. Update this file when a stage lands or a plan changes.
       +0.85 K / 2.50 K rmse; 10-12 µm window +0.44 K, rmse 1.64 K,
       r = +0.993; TIRS2 ~+1-3 K brighter in the far-IR, within the
       across-column σ.
-- [ ] **Stage-8 with CARRA-2 columns** — the DATA is now on disk:
-      CARRA-2 Jan 2025 days 1-7 downloaded at all 8 analysis hours
-      (plev+sfc+cloud, 891×892 80-90N grid, cc/clwc/ciwc merged into the
-      plev files, tcc/lsm/siconc aboard sfc; verified well-formed). Code
-      still needed before `--source carra2` works in `prefire_bt.py`:
-      collocate assumes 1-D lat/lon (needs `grid.GridIndex` for the
-      projected grid) and prep reads `o3` from plev (CARRA-2 publishes
-      none — splice the afglsw climatology as `lrt_sim.py` already does
-      for stage 7). 3-hourly states would halve the ERA5 state-time
-      offset, on a 2.5 km grid.
+- [x] **Stage-8 with CARRA-2 columns + three-source PREFIRE comparison** —
+      DONE. Collocate now goes through `grid.GridIndex` for every source
+      (ERA5 collocation regression-verified byte-identical; footprints
+      whose nearest in-domain cell is > 50 km off are counted and dropped),
+      per-state fields are materialized once (a CARRA-2 week is ~190 k
+      (cell, hour) columns — per-column reads would have decompressed the
+      same 63 MB fields 10^5 times), and prep falls back to afglsw
+      climatological ozone when the plev file has none. MERRA-2 extended
+      to days 1-7 (plev/sfc/rad, 3-hourly); both sources ran the full
+      SAT1 (30 clear + 10 overcast) and SAT2 chains. New `sources`
+      subcommand overlays the per-source stats.
+      RESULT (clear-sky sim − obs, SAT1, 30 columns each): ERA5 +4.20 K /
+      5.48 K rmse, MERRA-2 +2.65 / 4.52, CARRA-2 −0.80 / 2.88 — closure
+      ranks with resolution + state cadence; CARRA-2 flat through the
+      far-IR; all three dip −1…−6 K at 5 µm (largest CARRA-2, worth a
+      look — reptran coarse under-resolution vs a real state signal).
+      MERRA-2's 3-h cadence shows the synoptic-hour signal cleanly
+      (09/12Z +3.7/+4.7 K vs ±1.3 K at 00/03/15/18Z). Overcast: ERA5
+      −11.1, MERRA-2 −10.4, CARRA-2 +1.0 K mean / 11.6 K rmse (both
+      signs). TIRS2 independently reproduces the ranking (+3.9/+2.9/
+      +1.0 K, 3 clear columns). Caveat: each source's columns are its own
+      cells/states (same granules + selection rule) — native-resolution
+      state quality is deliberately part of the comparison; a
+      same-footprint matched-column mode would isolate radiometry vs
+      state if ever needed.
 - [ ] **Averaging kernels + DOF from the existing K files** — no new
       simulations needed: per column compute
       A = (Kᵀ S_e⁻¹ K + S_a⁻¹)⁻¹ Kᵀ S_e⁻¹ K from the `jacobian_*.nc`

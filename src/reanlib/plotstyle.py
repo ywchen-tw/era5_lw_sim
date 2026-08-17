@@ -32,7 +32,14 @@ def apply_agu_style() -> None:
     matplotlib.rcParams.update(AGU_RC)
 
 
-def panel_label(ax, letter: str, x: float = 0.0, y: float = 1.0) -> None:
-    """Bold '(a)'-style label at the top-left corner of the axes box."""
+def panel_label(ax, letter: str, x: float = 0.0, y: float = 1.0,
+                outside: bool = False) -> None:
+    """Bold '(a)'-style label at the top-left corner of the axes box.
+
+    ``outside=True`` sets it just above the frame instead of inside it.
+    """
+    if outside and y == 1.0:
+        y = 1.01
     ax.text(x, y, f"({letter})", transform=ax.transAxes, fontsize=12,
-            fontweight="bold", ha="left", va="top", clip_on=False)
+            fontweight="bold", ha="left", va="bottom" if outside else "top",
+            clip_on=False)

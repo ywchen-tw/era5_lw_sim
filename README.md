@@ -11,10 +11,12 @@ ERA5 radiation — with AGU-style figures at every stage.
 
 The data source is selected with `source:` in `config.yaml` or `--source
 {era5,merra2,carra2}` on any analysis stage (see "Data sources" below).
-ERA5 and MERRA-2 run stages 1-8 (incl. the RRTMG cross-check and the PREFIRE
-BT simulation); stage 7c (the hourly state-time test) is ERA5-only. CARRA-2
-runs stages 1-6 — it publishes no ozone, and its radiation lives in the
-forecast stream, so the radiative-transfer stages do not accept it yet.
+All three sources run stages 1-8 (incl. the stage-7 LW closure, the RRTMG
+cross-check and the PREFIRE BT simulation); stage 7c (the hourly state-time
+test) is ERA5-only. CARRA-2 publishes no ozone, so its radiative-transfer
+stages splice the afglsw subarctic-winter climatology, and its reference
+fluxes come from the forecast stream (1-h windows; see the CARRA-2 stage-7
+notes).
 
 ## Workflow at a glance
 
@@ -900,6 +902,7 @@ conda activate er3t_env && python src/prefire_bt.py jacobian  --year 2025 --mont
 conda activate era5     && python src/prefire_bt.py figure    --year 2025 --month 1 --sat 1
 conda activate era5     && python src/prefire_bt.py stats     --year 2025 --month 1 --sat 1
 conda activate era5     && python src/prefire_bt.py compare   --year 2025 --month 1 --sats 1 2
+conda activate era5     && python src/prefire_bt.py sources   --year 2025 --month 1 --sat 1
 ```
 
 - **collocate** maps every good-quality footprint to its reanalysis cell and
@@ -909,10 +912,18 @@ conda activate era5     && python src/prefire_bt.py compare   --year 2025 --mont
   cloudy columns are excluded because BT does not blend linearly across a
   broken scene. EVERY column (not just the test set) stores its per-scene
   mean observed BT, viewing angle and mean obs time, so the cross-instrument
-  comparison below is independent of the test-set pick. All subcommands accept `--source merra2`; MERRA-2 sky
+  comparison below is independent of the test-set pick. All subcommands
+  accept `--source merra2` and `--source carra2`. MERRA-2 sky
   classification uses the stage-7 screens (M2T1NXRAD `CLDTOT` for overcast,
   condensate-only for clear) since M2I3NPASM has no per-level cloud
-  fraction — so the day's `rad` file must be downloaded too.
+  fraction — so the day's `rad` file must be downloaded too. CARRA-2 needs
+  its plev day files topped up with the `cloud` dataset (per-level
+  cc/clwc/ciwc); footprints are matched on the native 2.5 km projected grid
+  through `reanlib.grid.GridIndex` (the same code path serves the regular
+  grids — the ERA5 collocation is byte-identical either way), its 3-hourly
+  analyses halve the worst-case state-time offset, and since CARRA-2
+  publishes no ozone, `prep` splices the afglsw subarctic-winter
+  climatology exactly as stage 7 does.
 - **run** simulates one thermal-source spectral radiance per column with
   libRadtran at the footprint viewing angle (`mie` liquid / `yang2013` ice —
   radiance-grade optics, unlike the flux-oriented Hu & Stamnes / Fu of stage
@@ -934,11 +945,11 @@ conda activate era5     && python src/prefire_bt.py compare   --year 2025 --mont
   prototyping); `--simulator lrt` gives the channel-resolved K for the
   planned cloud-property retrieval (future validation target: collocated
   EarthCARE cloud products, which need an ESA EO account).
-- **stats** aggregates sim − obs over all simulated columns: clear-sky
-  per-channel bias spectrum (±1σ across columns), overall bias/rmse, and a
-  breakdown by analysis hour (cf. the stage-7c synoptic-increment finding);
-  overcast columns are listed per column since their mismatch is cloud
-  placement, not radiometry
+- **stats** aggregates sim − obs over all simulated columns: clear-sky and
+  overcast per-channel bias spectra (±1σ across columns), overall
+  bias/rmse, and a breakdown by analysis hour (cf. the stage-7c
+  synoptic-increment finding); overcast columns are also listed per column
+  since their mismatch is cloud placement, not radiometry
   (`figures/<source>/prefire_bt_stats_YYYYMM_satN.png` +
   a `stats_*.json` next to the manifest).
 - **compare** cross-checks the two instruments on shared (cell, state-hour)
@@ -948,6 +959,10 @@ conda activate era5     && python src/prefire_bt.py compare   --year 2025 --mont
   obs times within `--max-dt` (default 1 h) of each other, since outside
   that real atmospheric change enters the difference
   (`figures/<source>/prefire_sat1_vs_sat2_YYYYMM.png` + `compare_*.json`).
+- **sources** overlays the per-source clear-sky bias spectra from the
+  `stats` files and prints the summary table; the figure lands at the
+  figures root since it spans sources
+  (`figures/prefire_bt_sources_YYYYMM_satN.png`).
 
 A `cotscan` subcommand (er3t_env) reproduces the ARCSIX-style
 BT-vs-cloud-optical-thickness sensitivity figure with PREFIRE channels: a
@@ -992,6 +1007,26 @@ signature), +2…+5.5 K across the far-IR dirty window, and −1…−3 K in the
 selection concentrates columns at 06 UTC, so the hour dependence is
 suggestive rather than settled. Overcast: −11.1 K mean / 11.9 K rmse
 (cloud placement). `figures/era5/prefire_bt_stats_202501_sat1.png`.
+
+**Three-source comparison** (2025-01-01…07, SAT1, identical selection rule
+per source — 30 clear + 10 overcast columns each, coarse, yang2013 ice
+optics): clear-sky sim − obs ranks with resolution and state cadence —
+**ERA5 +4.20 K bias / 5.48 K rmse, MERRA-2 +2.65 / 4.52,
+CARRA-2 −0.80 / 2.88**. CARRA-2's bias spectrum hugs zero through the
+far-IR (17–26 µm) and its 2.5 km cells + 3-hourly states also shrink the
+across-column σ; all three sources share a −1…−6 K dip in the 5 µm
+channels (largest in CARRA-2). MERRA-2's 3-hourly cadence resolves the
+analysis-hour signal best: its 09/12 UTC columns run +3.7/+4.7 K while
+00/03/15/18 UTC sit within ±1.3 K — the stage-7c synoptic-increment
+signature appearing in BT space. Overcast columns close at −11.1 (ERA5) /
+−10.4 (MERRA-2) / +1.0 K mean but 11.6 K rmse scattering both ways
+(CARRA-2) — cloud placement in every case, with the mismatch deepest in
+the 10–12 µm window and shrinking into the far-IR. The same ranking holds
+from the independent TIRS2 radiometer (3 clear columns, 2025-01-01):
++3.9 / +2.9 / +1.0 K. NOTE each source's columns are its own cells and
+states (same granules and selection rule), so state quality at native
+resolution is deliberately part of the comparison.
+`figures/prefire_bt_sources_202501_sat1.png`.
 
 **SAT2 / TIRS2** (2025-01-01, same chain with `--sat 2`): TIRS2 delivers
 ~20× fewer best-quality spectra than TIRS1 poleward of 80°N — 97 % of its
