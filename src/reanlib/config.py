@@ -164,6 +164,20 @@ def state_cadence_h(cfg: dict) -> int:
                                      6 if cfg["source"] == "era5" else 3))
 
 
+def area_tag(cfg: dict) -> str:
+    """Optional filename tag for non-default download domains (e.g. "75-90N").
+
+    Set ``area_tag`` next to a source block's ``area`` override (or at the top
+    level of a study config). Files then live in the SAME data/derived trees as
+    the default-domain products, distinguished by name — e.g.
+    ``merra2_plev_75-90N_20191101.nc`` beside ``merra2_plev_20191101.nc`` — so
+    a matching domain is found (and not re-downloaded) by any later study.
+    Untagged configs are unaffected: the tag defaults to the empty string.
+    """
+    tag = source_block(cfg).get("area_tag") or cfg.get("area_tag") or ""
+    return f"_{tag}" if tag else ""
+
+
 def _root(cfg: dict, kind: str) -> Path:
     root = Path(cfg["paths"][kind])
     if not root.is_absolute():
@@ -180,25 +194,28 @@ def _month_dir(cfg: dict, kind: str, year: int, month: int) -> Path:
 
 
 def plev_path(cfg: dict, date: dt.date) -> Path:
-    return _day_dir(cfg, "data", date) / f"{cfg['source']}_plev_{date:%Y%m%d}.nc"
+    return (_day_dir(cfg, "data", date)
+            / f"{cfg['source']}_plev{area_tag(cfg)}_{date:%Y%m%d}.nc")
 
 
 def sfc_path(cfg: dict, date: dt.date) -> Path:
-    return _day_dir(cfg, "data", date) / f"{cfg['source']}_sfc_{date:%Y%m%d}.nc"
+    return (_day_dir(cfg, "data", date)
+            / f"{cfg['source']}_sfc{area_tag(cfg)}_{date:%Y%m%d}.nc")
 
 
 def ocn_path(cfg: dict, date: dt.date) -> Path:
     """MERRA-2 ocean-collection daily file (sea-ice fraction, M2T1NXOCN)."""
     if cfg["source"] != "merra2":
         raise ValueError("ocn_path is MERRA-2-only")
-    return _day_dir(cfg, "data", date) / f"{cfg['source']}_ocn_{date:%Y%m%d}.nc"
+    return (_day_dir(cfg, "data", date)
+            / f"{cfg['source']}_ocn{area_tag(cfg)}_{date:%Y%m%d}.nc")
 
 
 def const_path(cfg: dict) -> Path:
     """MERRA-2 time-invariant constants (land/ocean fractions, M2C0NXASM)."""
     if cfg["source"] != "merra2":
         raise ValueError("const_path is MERRA-2-only")
-    return _root(cfg, "data") / "merra2_const.nc"
+    return _root(cfg, "data") / f"merra2_const{area_tag(cfg)}.nc"
 
 
 def rad_path(cfg: dict, date: dt.date) -> Path:
@@ -207,26 +224,28 @@ def rad_path(cfg: dict, date: dt.date) -> Path:
     as strd/str accumulations)."""
     if cfg["source"] not in ("merra2", "carra2"):
         raise ValueError("rad_path is for merra2/carra2; ERA5 radiation is in sfc_path")
-    return _day_dir(cfg, "data", date) / f"{cfg['source']}_rad_{date:%Y%m%d}.nc"
+    return (_day_dir(cfg, "data", date)
+            / f"{cfg['source']}_rad{area_tag(cfg)}_{date:%Y%m%d}.nc")
 
 
 def inversion_path(cfg: dict, date: dt.date) -> Path:
-    return _day_dir(cfg, "derived", date) / f"{cfg['source']}_inversion_{date:%Y%m%d}.nc"
+    return (_day_dir(cfg, "derived", date)
+            / f"{cfg['source']}_inversion{area_tag(cfg)}_{date:%Y%m%d}.nc")
 
 
 def monthly_path(cfg: dict, year: int, month: int) -> Path:
     return (_month_dir(cfg, "derived", year, month)
-            / f"{cfg['source']}_inversion_monthly_{year:04d}{month:02d}.nc")
+            / f"{cfg['source']}_inversion_monthly{area_tag(cfg)}_{year:04d}{month:02d}.nc")
 
 
 def analysis_path(cfg: dict, year: int, month: int) -> Path:
     return (_month_dir(cfg, "derived", year, month)
-            / f"{cfg['source']}_profile_analysis_{year:04d}{month:02d}.nc")
+            / f"{cfg['source']}_profile_analysis{area_tag(cfg)}_{year:04d}{month:02d}.nc")
 
 
 def pairs_path(cfg: dict, year: int, month: int) -> Path:
     return (_month_dir(cfg, "derived", year, month)
-            / f"{cfg['source']}_mosaic_pairs_{year:04d}{month:02d}.nc")
+            / f"{cfg['source']}_mosaic_pairs{area_tag(cfg)}_{year:04d}{month:02d}.nc")
 
 
 def figures_dir(cfg: dict) -> Path:

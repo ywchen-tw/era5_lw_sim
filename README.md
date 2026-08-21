@@ -903,6 +903,7 @@ conda activate era5     && python src/prefire_bt.py figure    --year 2025 --mont
 conda activate era5     && python src/prefire_bt.py stats     --year 2025 --month 1 --sat 1
 conda activate era5     && python src/prefire_bt.py compare   --year 2025 --month 1 --sats 1 2
 conda activate era5     && python src/prefire_bt.py sources   --year 2025 --month 1 --sat 1
+conda activate er3t_env && python src/prefire_bt.py schematic --year 2025 --month 1 --sat 1
 ```
 
 - **collocate** maps every good-quality footprint to its reanalysis cell and
@@ -910,7 +911,24 @@ conda activate era5     && python src/prefire_bt.py sources   --year 2025 --mont
   → ≤ 3 h offset, 3-hourly for MERRA-2 → ≤ 1.5 h; `--cadence` overrides)
   and picks a test set of clear and single-class overcast columns; partially
   cloudy columns are excluded because BT does not blend linearly across a
-  broken scene. EVERY column (not just the test set) stores its per-scene
+  broken scene. The collocated state is **not** the single nearest cell:
+  profiles and surface fields are the area-weighted mean of every in-domain
+  cell inside a footprint-oriented box — by default ±50 km along the ground
+  track × ±12 km across it (the TIRS FOV is ~12 km across track and smears
+  to ~36 km along track over the image integration) — centred on the
+  footprint-group mean position and oriented by the per-footprint track
+  azimuth (averaged axially, so ascending and descending passes grouped
+  into one column share an axis instead of cancelling). Sky classification
+  uses the same box means, so "clear" means clear across the footprint, not
+  just at its centre cell; on ERA5 that median box holds ~23 cells (~385 on
+  2.5 km CARRA-2) and tightens the week's clear count from 14,512 to
+  10,500 columns. `--box-along-km/--box-cross-km` resize the box, `0 0`
+  restores nearest-cell point collocation, and older point-mode collocation
+  JSONs run through `prep` unchanged (regression-verified byte-identical).
+  Columns whose box contains no cell centre fall back to the nearest cell
+  and are counted in the summary — near the orbit apex the track runs
+  almost east–west and the ±12 km cross-track width can slip between two
+  0.25° latitude rows (~0.4 % of ERA5 columns). EVERY column (not just the test set) stores its per-scene
   mean observed BT, viewing angle and mean obs time, so the cross-instrument
   comparison below is independent of the test-set pick. All subcommands
   accept `--source merra2` and `--source carra2`. MERRA-2 sky
@@ -963,6 +981,30 @@ conda activate era5     && python src/prefire_bt.py sources   --year 2025 --mont
   `stats` files and prints the summary table; the figure lands at the
   figures root since it spans sources
   (`figures/prefire_bt_sources_YYYYMM_satN.png`).
+- **schematic** (er3t_env) draws the single-footprint walkthrough
+  (`figures/prefire_bt_schematic_YYYYMM_satN.png`): (a) the oriented
+  ±50 × ±12 km averaging box in track coordinates with the TIRS FOV
+  polygon and every source's grid cells inside it (ERA5 ~30, MERRA-2 ~12,
+  CARRA-2 ~385), (b, c) each source's box-mean T and q profiles with the
+  across-cell ±1σ spread and skin-temperature markers, and (d) the
+  footprint's observed channel BT against a fresh clear-sky simulation
+  from each source's box-mean state at the footprint's own vza and scene
+  SRF. Everything is recomputed for one footprint, so the sources are
+  strictly like-for-like on one observation (production columns pool
+  nearby footprints, so `stats` numbers need not match exactly). The
+  default pick maximizes the worst source's box-cell count over the first
+  source's selected clear columns — near the orbit apex the ground track
+  runs almost east–west and a coarse grid's box can otherwise hold a
+  single cell; `--column`/`--sources` override.
+- **gridmap** (era5 env, no RT) draws the same footprint's grids as true
+  four-corner cell polygons (`figures/prefire_bt_gridmap_YYYYMM_satN.png`):
+  one overlay panel plus one panel per source. It makes the archive-grid
+  anisotropy explicit — at 83°N an ERA5 cell is a ~3.4 × 27.8 km sliver
+  and a MERRA-2 cell ~8.5 × 55.6 km, so the union of in-box cells (the
+  area actually averaged) extends well beyond the ±12 km box cross-track
+  for the coarse grids, while CARRA-2's 2.5 km mesh fills the box tightly.
+  Corner positions are spherical means of neighbouring cell centers
+  (exact lat/lon midpoints on regular grids).
 
 A `cotscan` subcommand (er3t_env) reproduces the ARCSIX-style
 BT-vs-cloud-optical-thickness sensitivity figure with PREFIRE channels: a
@@ -978,6 +1020,33 @@ refuses fine/medium on Darwin and defaults to `coarse` locally. Production
 fine-grid runs belong on CURC (`slurm/curc_prefire_bt.sh`). The local coarse
 grid (~15 cm⁻¹) under-resolves far-IR channels whose widths shrink to
 ~3–9 cm⁻¹, so science numbers should come from the fine run.
+
+**Footprint-box rerun (current results).** The full chain
+(collocate → prep → run → rrtmg → stats → sources/compare) has been rerun
+for all three sources and both satellites with the box-averaged profiles
+(±50 × ±12 km; same granules and selection rule — SAT1 30 clear + 10
+overcast, SAT2 defaults). Clear-sky sim − obs (SAT1):
+
+| box-mode vs (point-mode) | ERA5 | MERRA-2 | CARRA-2 |
+|---|---|---|---|
+| clear bias / rmse | +4.80 / 5.66 K (+4.20 / 5.48) | +2.57 / 4.72 K (+2.65 / 4.52) | **−0.29 / 2.86 K** (−0.80 / 2.88) |
+| overcast bias | −6.42 K (−11.1) | −10.20 K (−10.4) | +4.36 K (+1.0) |
+| SAT2 clear bias | +5.81 K (+3.9) | +2.75 K (+2.9) | −1.59 K (+1.0) |
+
+The clear-sky ranking and its magnitudes are robust to footprint-integrated
+collocation — biases move by ≲ 0.6 K and rmse by ≲ 0.2 K, so sub-footprint
+state variability is a minor term for clear columns over pack ice, and the
+ERA5 > MERRA-2 > CARRA-2 warm-bias ordering is state quality, not
+collocation noise. Overcast columns move more, as expected where cloud
+scenes vary inside a footprint: ERA5's overcast mismatch nearly halves
+(−11.1 → −6.4 K) once the simulated cloud is the box mean rather than one
+cell, while CARRA-2's much stricter footprint-wide overcast screen (its
+2.5 km grid leaves only 178 overcast columns of 8,700 point-mode ones)
+selects a different, thinner population (+4.4 K). Note the box- and
+point-mode test sets are *different columns* (the sky classes shift), so
+these deltas mix selection and averaging effects. The detailed spectra,
+by-hour breakdowns and discussion below are from the original point-mode
+runs; their figures have been regenerated in box mode.
 
 First results (2025-01-01, SAT1, coarse, 3 clear + 3 overcast columns):
 clear-sky sim − obs ≈ **+5 K** in window and far-IR channels — consistent
@@ -1042,6 +1111,73 @@ channel samples, and 10–12 µm window BT agrees to **+0.44 K bias, 1.64 K
 rmse, r = +0.993**. TIRS2 runs ~+1–3 K brighter through the far-IR
 (17–26 µm), within the across-column σ there.
 `figures/era5/prefire_sat1_vs_sat2_202501.png`.
+
+## Surface CRE vs inversion strength (CRE study, `cre_sim.py`)
+
+Quantifies how temperature inversions shape the surface LW cloud radiative
+effect over **100% sea ice vs 100% open ocean**, on a MERRA-2 **75–90°N**
+study domain (`config_cre.yaml` — same `data/merra2` tree, files tagged
+`_75-90N_`; the 80–90°N band alone holds essentially no winter open water).
+Season Nov 2019 – Jan 2020, polar-night cells only (geometric noon sun below
+the horizon, so SW CRE ≡ 0). Overcast columns (bracket-mean CLDTOT ≥ 0.99,
+condensate > 1 g/m²) with FRSEAICE ≥ 0.99 (ice100) or ≤ 0.01 (ocean100) are
+stratified-sampled across bins of **dt_850_skt = T(850 hPa) − T(skin)** and
+each is simulated twice — all-sky (clwc/ciwc as plane-parallel Hu/Fu clouds,
+r_eff 10/25 µm) and clear (clouds removed) — with both libRadtran and
+RRTMG-LW; `CRE_dn = LW↓(all) − LW↓(clear)`, net CRE = 0.99·CRE_dn. Gases at
+the stage-7 constants (cancel in the difference).
+
+```bash
+conda run -n era5     python src/cre_sim.py select     # sample + profiles
+conda run -n er3t_env python src/cre_sim.py run-lrt    # paired uvspec runs
+conda run -n era5     python src/cre_sim.py run-rrtmg  # paired climlab runs
+conda run -n era5     python src/cre_sim.py analyze    # stats + figure
+# cloud-property / layering analyses (no new RT; --flux dn|net):
+conda run -n era5     python src/cre_sim.py analyze-cloud    # LWP/IWP/tau/geometry + layering
+conda run -n era5     python src/cre_sim.py analyze-drivers  # geometry heat maps + cloud-base-T driver
+conda run -n era5     python src/cre_sim.py census-layers    # AREA-TRUE layer census, full population
+conda run -n er3t_env python src/cre_sim.py validate-layers  # per-layer CRE attribution (RT)
+conda run -n era5     python src/nya_cloudnet_winter.py      # Ny-Alesund winter reference stats
+```
+
+Cloud layers are segmented phase-aware (split at any clear level or a 3x
+content dip; level cloud floor 10⁻³ g/m³; layer τ ≥ 0.05; ice below a liquid
+base = virga, excluded from thickness), calibrated against the Cloudnet
+radar/lidar climatology at Ny-Ålesund (Nomokonova et al. 2019) — including a
+**season-matched Nov–Jan reference** recomputed from the ACTRIS Cloudnet
+classification (`src/nya_cloudnet_winter.py`, data in
+`data/nyalesund/classification/`). Key outcomes: total optical depth, not
+layer arrangement or geometry, sets the surface CRE (saturation at τ ≈ 5);
+the lowest significant layer alone reproduces a median 84 % of full-column
+CRE (validate-layers); area-true lowest-layer thickness is p50 0.2/1.6 km
+(ice/ocean) with >3 km layers on 11/30 % of overcast area — winter Cloudnet
+shows mixed-phase 1.64 km median with p99 ≈ 6 km, so MERRA-2's deep winter
+tail is realistic and its residual biases are the ~2× ice-phase median
+(grid-mean smearing) and the drizzling liquid decks.
+
+Results (5,973 columns; `figures/cre/merra2/cre_inversion_201911-202001.png`,
+stats JSON beside the manifest in `derived/merra2/cre_sim_75-90N/`):
+
+- **ice100**: median CRE_dn falls monotonically with inversion strength,
+  **72.9 → 28.0 W/m²** from the strongest-lapse bin (< −4 K) to > 12 K
+  inversions. Two intertwined causes: condensate thins with stability (median
+  LWP+IWP 57 → 10 g/m²), and at fixed water path stronger inversions still
+  yield ~10–20 W/m² less CRE (warm air aloft elevates the clear-sky LW↓
+  baseline the cloud must beat).
+- **ocean100**: surface-referenced inversions are essentially absent under
+  winter overcast (only 15/1209 columns reach the 0–4 K bin, none beyond);
+  thick liquid cloud (median LWP ≈ 109 g/m²) keeps CRE_dn emissivity-
+  saturated at **~77 W/m²** with a narrow distribution. In the shared
+  strongest-lapse bin ocean exceeds ice by only ~4 W/m² despite 3× the water
+  path — both near saturation.
+- **Codes agree**: RRTMG − libRadtran = **+3.2 W/m²** mean CRE_dn (tight,
+  the familiar cloud-optics family offset); conclusions code-independent.
+- **MERRA-2's internal CRE** ((LWGAB−LWGABCLR)/EMIS) matches the offline
+  codes over ice to +0.3 W/m² (its ~+7 W/m² Chou–Suarez clear-sky offset
+  cancels: sim−M2 = +7.2 all-sky, +7.0 clear), but over ocean its CRE is
+  **9.5 W/m² weaker** — the gap is in the all-sky flux (+14.2 vs +4.7
+  clear), i.e. GEOS's own marine clouds emit less per column than the fixed
+  10 µm/25 µm plane-parallel treatment.
 
 ## Notes on surface fluxes
 

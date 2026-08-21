@@ -1,0 +1,42 @@
+# CRE-vs-inversion study config (surface LW CRE over 100% ice vs 100% open
+# ocean, cloudy columns, libRadtran + RRTMG) — kept separate from config.yaml
+# so the main 80-90N products and their published numbers are untouched: the
+# study's files carry a 75-90N name tag beside them in the same trees.
+# Pass with --config config_cre.yaml; MERRA-2 only.
+#
+# NOTE: a custom --config overlays the built-in DEFAULTS (reanlib/config.py),
+# not config.yaml, so the merra2 block below is self-contained.
+
+source: merra2
+
+# Study domain: 75-90N. The 80-90N band has essentially no 100% open water
+# in winter (0-19 cells per snapshot, Jan 2020); the Greenland/Barents Sea
+# open-ocean class lives south of 80N. Analysis screens to polar night
+# (sza >= 90 deg), so surface SW CRE is identically zero.
+area: [90, -180, 75, 180]
+
+# Data and derived products share the main trees (data/merra2, derived/merra2)
+# so an already-downloaded domain is found by later studies; the area_tag
+# below distinguishes this domain in FILE NAMES instead (e.g.
+# merra2_plev_75-90N_20191101.nc). Figures keep a separate root because
+# monthly/stage figures have fixed names that would clobber the 80-90N ones.
+paths:
+  figures: figures/cre    # -> figures/cre/merra2/
+
+merra2:
+  area_tag: "75-90N"      # inserted into data/derived file names by reanlib.config
+  collections:
+    plev: M2I3NPASM   # inst3_3d_asm_Np: 3-hourly INSTANTANEOUS, 42 pressure levels
+    sfc: M2I1NXASM    # inst1_2d_asm_Nx: hourly INSTANTANEOUS single-level
+    rad: M2T1NXRAD    # tavg1_2d_rad_Nx: 1-h time-averaged W/m2, stamped HH:30
+    ocn: M2T1NXOCN    # tavg1_2d_ocn_Nx: 1-h time-averaged, stamped HH:30
+    const: M2C0NXASM  # const_2d_asm_Nx: time-invariant, ONE file total
+  version: "5.12.4"
+  plev_variables: [T, QV, O3, QL, QI]   # -> t, q, o3, clwc, ciwc
+  sfc_variables: [T2M, TS, PS]          # -> t2m, skt, sp
+  # LWdn = LWGAB/EMIS; LWGABCLR gives MERRA-2's own clear-sky LWdn (model CRE
+  # cross-check); CLDTOT is the sky classifier.
+  rad_variables: [LWGAB, LWGEM, LWGABCLR, EMIS, CLDTOT]
+  ocn_variables: [FRSEAICE]
+  const_variables: [FRLAND, FRLANDICE, FROCEAN]
+  default_hours: [0, 6, 12, 18]

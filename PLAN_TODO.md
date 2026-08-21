@@ -6,6 +6,16 @@ the README. Update this file when a stage lands or a plan changes.
 
 ## Done
 
+- [x] **CRE study — surface LW CRE vs inversion strength** (`cre_sim.py`,
+      `config_cre.yaml`): MERRA-2 75–90°N (files tagged `_75-90N_` in the
+      shared trees; `area_tag` support added to `reanlib/config.py`),
+      Nov 2019 – Jan 2020, polar-night overcast columns, ice100 vs ocean100
+      stratified by dt_850_skt, paired all-sky/clear libRadtran + RRTMG runs
+      (5,973 columns). Ice: CRE_dn 72.9 → 28.0 W/m² with growing inversion
+      strength (thinner clouds + elevated clear baseline); ocean: no SBIs,
+      saturated ~77 W/m²; RRTMG−lrt +3.2; MERRA-2 internal CRE matches over
+      ice (+0.3), 9.5 W/m² weak over ocean (all-sky flux, its own cloud
+      optics). See README "Surface CRE vs inversion strength".
 - [x] **Stages 1–6** — ERA5 download (plev + sfc, idempotent), SBI +
       fixed-level inversion metrics, profile/map figures, monthly
       climatology, profile PCA, MOSAiC comparison (incl. matched-metric
@@ -168,6 +178,47 @@ the README. Update this file when a stage lands or a plan changes.
       replaced on the same grid — stage-7 clear + cloudy both run on it).
       The 85-90N raw plev chunks stay on disk as the published-r archive
       for the humidity-convention work.
+- [x] **Footprint-box collocation for stage 8** — `collocate`/`prep` now
+      average the reanalysis state over an oriented footprint box instead
+      of sampling the single nearest cell: default ±50 km along the ground
+      track × ±12 km across it (`--box-along-km/--box-cross-km`; `0 0`
+      restores point mode), centred on the footprint-group mean position,
+      oriented by the per-footprint track azimuth (axial mean, so
+      ascending+descending groups share an axis), area-weighted and
+      NaN-aware per level (below-ground fill in MERRA-2/CARRA-2). Sky is
+      classified from the same box means, so "clear" is footprint-wide
+      clear — ERA5 week clear columns 14,512 → 10,500, overcast 8,776 →
+      3,860; ~23 cells/box on ERA5, ~385 on CARRA-2. New
+      `grid.GridIndex.box_query` (KD-tree ball query + tangent-plane box,
+      verified cell-for-cell against brute-force spherical geometry on
+      both grid families, incl. pole/date line); ~0.4 % of ERA5 columns
+      (near the orbit apex, where the track is nearly E–W and ±12 km can
+      slip between 0.25° lat rows) fall back to the nearest cell, counted
+      in the summary. Point mode regression-verified: classification
+      fields and every prep profile file byte-identical; old point-mode
+      collocation JSONs run through `prep` unchanged.
+      FULL RT RERUN DONE (all three sources, SAT1 30 clear + 10 overcast
+      + SAT2, coarse, yang2013): clear-sky sim − obs SAT1 = ERA5
+      +4.80 K / 5.66 rmse, MERRA-2 +2.57 / 4.72, CARRA-2 −0.29 / 2.86
+      (point-mode was +4.20 / +2.65 / −0.80) — ranking and magnitudes
+      robust to footprint averaging, so the clear-sky story is state
+      quality, not collocation noise. Overcast: ERA5 −6.4 (was −11.1 —
+      box-mean cloud halves the placement mismatch), MERRA-2 −10.2,
+      CARRA-2 +4.4 K on its 178-column footprint-wide-overcast pool.
+      SAT2 clear: +5.8 / +2.8 / −1.6 K. Box- vs point-mode test sets are
+      different columns (stricter box-clear/overcast screens), so deltas
+      mix selection and averaging. `compare` now skips its figure cleanly
+      when no shared column pair is within --max-dt (MERRA-2/CARRA-2 have
+      none; ERA5's 8-column result is obs-only and unchanged: +0.85 K /
+      2.50 rmse, window +0.44 K r +0.993). Point-mode trees are backed up
+      in the session scratchpad (pbt_backup_full/).
+      A `schematic` subcommand (er3t_env) draws the single-footprint
+      walkthrough — box + all three grids / box-mean T,q ±1σ / obs-vs-sim
+      channel BT from fresh per-source sims at the footprint's vza
+      (figures/prefire_bt_schematic_202501_sat1.png; the 2025-01-01 06:37Z
+      83.0N footprint shows a 17 K cross-source skin-temperature spread,
+      CARRA-2 232 / ERA5 244 / MERRA-2 249 K, mapping directly onto the
+      BT closure ranking).
 - [ ] **CURC fine-grid stage-8 run** — local `reptran coarse` (~15 cm⁻¹)
       under-resolves far-IR channels (3–9 cm⁻¹ wide); science-grade BT and
       K need `reptran fine` on CURC (`slurm/curc_prefire_bt.sh`; NEVER
@@ -222,8 +273,11 @@ the README. Update this file when a stage lands or a plan changes.
       state quality is deliberately part of the comparison; a
       same-footprint matched-column mode would isolate radiometry vs
       state if ever needed.
-- [ ] **Averaging kernels + DOF from the existing K files** — no new
-      simulations needed: per column compute
+- [ ] **Averaging kernels + DOF from the existing K files** — NOTE the
+      existing `jacobian_*.nc` were computed from point-collocation
+      profiles; rerun `jacobian` on the box-mode manifests first if this
+      lands after the footprint-box change. No new *forward* simulations
+      needed: per column compute
       A = (Kᵀ S_e⁻¹ K + S_a⁻¹)⁻¹ Kᵀ S_e⁻¹ K from the `jacobian_*.nc`
       matrices (channel NEdR already stored → S_e; S_a from a monthly
       reanalysis profile covariance), report DOF = trace(A) and AK-row
@@ -246,6 +300,19 @@ the README. Update this file when a stage lands or a plan changes.
       so vertical-resolution smoothing isn't misread as state bias.
 
 ## Backlog / ideas
+
+- [x] **Slant-path (per-level parallax) collocation for stage 8 —
+      considered and REJECTED for PREFIRE geometry.** A layer at height z
+      is viewed displaced by z·tan(vza) toward the satellite (≤ 2.9 km at
+      10 km for PREFIRE's max vza 16°), so the footprint box could be cast
+      per level. Upper-bound test (CARRA-2 schematic column, whole box —
+      surface included — shifted 3 km cross-track): mean −0.05 K, worst
+      channel −0.07 K, and most of that came from shifting the skin, which
+      real slant geometry would not move. Corroborated by stage 6b: 43 km
+      balloon-drift displacements at 300 hPa changed biases ≤ 0.04 K.
+      Decision: keep the surface-cast box at all levels. Revisit only for
+      wide-scan instruments (vza 50–60°), high sharp cloud layers in
+      partial-cloud radiance blending, or a FOV-tight (±6 km) box.
 
 - [x] **Collocate each level at its own balloon position** (stage 6b) — each
       report level is now matched at the balloon's drifted position, taken
