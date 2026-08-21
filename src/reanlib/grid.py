@@ -208,6 +208,26 @@ def great_circle_km(lat1, lon1, lat2, lon2) -> np.ndarray:
     return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.clip(hav, 0, 1)))
 
 
+def bearing_deg(lat1, lon1, lat2, lon2) -> np.ndarray:
+    """Initial great-circle bearing from point 1 to point 2, degrees
+    clockwise from north."""
+    p1, p2 = np.deg2rad(lat1), np.deg2rad(lat2)
+    dlam = np.deg2rad(np.asarray(lon2) - np.asarray(lon1))
+    y = np.sin(dlam) * np.cos(p2)
+    x = np.cos(p1) * np.sin(p2) - np.sin(p1) * np.cos(p2) * np.cos(dlam)
+    return np.rad2deg(np.arctan2(y, x))
+
+
+def mean_latlon(lats, lons) -> tuple[float, float]:
+    """Spherical mean position via unit-vector averaging -- pole- and
+    date-line-safe, unlike a plain lat/lon mean."""
+    v = _unit_vectors(np.asarray(lats, dtype=float),
+                      np.asarray(lons, dtype=float)).mean(axis=0)
+    v = v / np.linalg.norm(v)
+    return (float(np.rad2deg(np.arcsin(np.clip(v[2], -1.0, 1.0)))),
+            float(np.rad2deg(np.arctan2(v[1], v[0]))))
+
+
 def _unit_vectors(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
     """(N, 3) unit vectors on the sphere for KD-tree nearest-neighbour search.
 
@@ -276,6 +296,39 @@ class GridIndex:
         dist = float(great_circle_km(self.lat2d[iy, ix], self.lon2d[iy, ix],
                                      lat, lon))
         return (int(iy), int(ix)), dist
+
+    def box_query(self, lat: float, lon: float, bearing: float,
+                  half_along_km: float, half_cross_km: float
+                  ) -> tuple[np.ndarray, np.ndarray]:
+        """All in-domain cells inside an oriented box: ``(iys, ixs)`` arrays.
+
+        The box is centred at (lat, lon) and extends +/-half_along_km along
+        great-circle ``bearing`` (degrees clockwise from north; the box is
+        symmetric, so bearing and bearing+180 select the same cells) and
+        +/-half_cross_km perpendicular to it. Membership is evaluated in the
+        local tangent plane, whose error at these scales (~50 km) is metres,
+        and stays correct at the pole and across the date line. May return
+        empty arrays when the box lies outside the domain.
+        """
+        c = _unit_vectors(np.array([lat]), np.array([lon]))[0]
+        lam = np.deg2rad(lon)
+        east = np.array([-np.sin(lam), np.cos(lam), 0.0])
+        north = np.cross(c, east)
+        b = np.deg2rad(bearing)
+        a_hat = np.sin(b) * east + np.cos(b) * north
+        x_hat = np.cos(b) * east - np.sin(b) * north
+        r_km = float(np.hypot(half_along_km, half_cross_km))
+        chord = 2.0 * np.sin(min(r_km / EARTH_RADIUS_KM, np.pi) / 2.0)
+        ks = self.tree.query_ball_point(c, chord)
+        if not ks:
+            return np.empty(0, dtype=int), np.empty(0, dtype=int)
+        flat = self._flat[np.asarray(ks, dtype=int)]
+        iys, ixs = np.unravel_index(flat, self.shape)
+        v = _unit_vectors(self.lat2d[iys, ixs], self.lon2d[iys, ixs])
+        d = (v - c) * EARTH_RADIUS_KM
+        ok = ((np.abs(d @ a_hat) <= half_along_km)
+              & (np.abs(d @ x_hat) <= half_cross_km))
+        return iys[ok].astype(int), ixs[ok].astype(int)
 
     def isel(self, iy: int, ix: int) -> dict[str, int]:
         """``dict`` of index selectors for ``Dataset.isel``."""

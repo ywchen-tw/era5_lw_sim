@@ -61,7 +61,8 @@ from reanlib.config import (REPO_ROOT, SOURCES, figures_dir, load_config,
                             monthly_path, plev_path, sfc_path, source_label,
                             state_cadence_h)
 from reanlib.fluxes import load_cldtot
-from reanlib.grid import GridIndex, hdims
+from reanlib.grid import (GridIndex, area_weights, bearing_deg,
+                          great_circle_km, hdims, mean_latlon)
 from reanlib.io_era5 import open_era5
 from lrt_sim import (EMISSIVITY, REFF_ICE_UM, REFF_LIQ_UM,
                           afglsw_o3_mmr, build_profile_files,
@@ -187,6 +188,82 @@ def obs_channel_bt_to_rad(srf: dict, scene: int, bt: np.ndarray) -> np.ndarray:
 #: the footprint fell outside the file's domain mask
 MAX_MATCH_KM = 50.0
 
+#: footprint averaging-box half-widths: the TIRS FOV is ~12 km across track
+#: and smears to ~36 km along track over the image integration, so
+#: +/-50 x +/-12 km buffers the full geolocated FOV. The collocated state is
+#: the area-weighted mean of every in-domain cell inside the box
+#: (--box-along-km/--box-cross-km; 0 0 restores nearest-cell collocation)
+BOX_ALONG_KM = 50.0
+BOX_CROSS_KM = 12.0
+
+
+def track_bearing(lat, lon, ia: int, sc: int) -> float:
+    """Ground-track azimuth at footprint (ia, sc) from its atrack neighbours
+    in the same scene; NaN when no neighbour has valid geolocation."""
+    n = lat.shape[0]
+    for j0, j1 in ((ia - 1, ia + 1), (ia, ia + 1), (ia - 1, ia)):
+        if (0 <= j0 and j1 < n
+                and np.isfinite([lat[j0, sc], lon[j0, sc],
+                                 lat[j1, sc], lon[j1, sc]]).all()):
+            return float(bearing_deg(lat[j0, sc], lon[j0, sc],
+                                     lat[j1, sc], lon[j1, sc]))
+    return float("nan")
+
+
+def axial_mean_deg(degs) -> float:
+    """Mean of axial directions (theta == theta + 180), so the track azimuths
+    of an ascending and a descending pass average to their common axis
+    instead of cancelling; None/NaN entries are ignored."""
+    a = np.deg2rad([2.0 * d for d in degs
+                    if d is not None and np.isfinite(d)])
+    if a.size == 0:
+        return float("nan")
+    return float(np.rad2deg(np.arctan2(np.sin(a).mean(),
+                                       np.cos(a).mean())) / 2.0)
+
+
+def wnanmean(a, w) -> np.ndarray:
+    """Weighted mean over the trailing (cell) axis, skipping NaN entries
+    per row; rows with no finite entry return NaN."""
+    a = np.asarray(a, dtype=float)
+    m = np.isfinite(a)
+    ws = np.where(m, w, 0.0)
+    tot = ws.sum(axis=-1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = (np.where(m, a, 0.0) * ws).sum(axis=-1) / tot
+    return np.where(tot > 0, out, np.nan)
+
+
+def box_cells(idx: GridIndex, aw, fp_lat, fp_lon, track_deg,
+              iy: int, ix: int, half_along_km: float, half_cross_km: float):
+    """Cells averaged into one column: ``(iys, ixs, weights)``.
+
+    The oriented footprint box when enabled and resolvable, else the single
+    nearest cell (box disabled, no valid track azimuth, or the box missed
+    the domain entirely — the center guard MAX_MATCH_KM already passed, so
+    the nearest cell is a legitimate fallback).
+    """
+    if (half_along_km > 0 and half_cross_km > 0
+            and fp_lat is not None and track_deg is not None
+            and np.isfinite(track_deg)):
+        iys, ixs = idx.box_query(float(fp_lat), float(fp_lon),
+                                 float(track_deg),
+                                 half_along_km, half_cross_km)
+        if iys.size:
+            return iys, ixs, aw[iys, ixs]
+    return (np.array([iy], dtype=int), np.array([ix], dtype=int),
+            np.ones(1))
+
+
+def read_box(da, dims, iys, ixs) -> np.ndarray:
+    """Box cells of a (…, y, x) DataArray as (…, n_cells), reading only the
+    bounding hyperslab — never the full field (a CARRA-2 field is ~63 MB,
+    and prep visits many columns)."""
+    y0, x0 = int(iys.min()), int(ixs.min())
+    sub = da.isel({dims[0]: slice(y0, int(iys.max()) + 1),
+                   dims[1]: slice(x0, int(ixs.max()) + 1)}).values
+    return sub[..., iys - y0, ixs - x0]
+
 
 def granule_files(cfg, year, month, sat) -> "list[str]":
     pat = str(Path(cfg["paths"]["data"]) / "prefire" / f"{year:04d}" /
@@ -259,11 +336,14 @@ def cmd_collocate(args) -> int:
                 if dist_km > MAX_MATCH_KM:
                     n_far += 1
                     continue
+                trk = track_bearing(lat, lon, ia, sc)
                 key = (et.isoformat(), iy, ix)
                 groups.setdefault(key, []).append({
                     "granule": os.path.basename(fn), "atrack": int(ia),
                     "scene": int(sc), "time": t.isoformat(),
                     "lat": float(lat[ia, sc]), "lon": float(lon[ia, sc]),
+                    "track_deg": None if not np.isfinite(trk)
+                                 else round(trk, 2),
                     "vza": float(vza[ia, sc]),
                     "bt": [None if not np.isfinite(v) else round(float(v), 3)
                            for v in bt[ia, sc]],
@@ -291,6 +371,13 @@ def cmd_collocate(args) -> int:
     for (et_iso, iy, ix), fps in groups.items():
         by_state.setdefault(et_iso, []).append((iy, ix, fps))
 
+    aw_cache = {}
+
+    def area_wt(date):
+        if date not in aw_cache:
+            aw_cache[date] = area_weights(rean_day(date))
+        return aw_cache[date]
+
     columns = []
     for et_iso in sorted(by_state):
         et = dt.datetime.fromisoformat(et_iso)
@@ -305,15 +392,23 @@ def cmd_collocate(args) -> int:
         cc3 = p5["cc"].values if "cc" in p5 else None
         cld2 = cldtot_at(et) if cc3 is None else None
         idx = grid_index(et.date())
+        aw = area_wt(et.date())
         for iy, ix, fps in sorted(by_state[et_iso], key=lambda t: t[:2]):
-            clwc = clwc3[:, iy, ix].astype(float)
-            ciwc = ciwc3[:, iy, ix].astype(float)
+            # the column's averaging box: footprint-group mean center,
+            # group-mean (axial) ground-track azimuth
+            fp_lat, fp_lon = mean_latlon([f["lat"] for f in fps],
+                                         [f["lon"] for f in fps])
+            trk = axial_mean_deg([f["track_deg"] for f in fps])
+            iys, ixs, w = box_cells(idx, aw, fp_lat, fp_lon, trk, iy, ix,
+                                    args.box_along_km, args.box_cross_km)
+            clwc = wnanmean(clwc3[:, iys, ixs], w)
+            ciwc = wnanmean(ciwc3[:, iys, ixs], w)
             lwp = float(TRAPZ(np.nan_to_num(clwc[::-1]), x=p_pa_asc) / G0 * 1e3)
             iwp = float(TRAPZ(np.nan_to_num(ciwc[::-1]), x=p_pa_asc) / G0 * 1e3)
             if cc3 is not None:
-                cc_max = float(np.nanmax(cc3[:, iy, ix]))
+                cc_max = float(np.nanmax(wnanmean(cc3[:, iys, ixs], w)))
             else:
-                cc_max = float(cld2[iy, ix])
+                cc_max = float(wnanmean(cld2[iys, ixs], w))
             twp = lwp + iwp
             if (cc_max <= 0.01 and twp <= 1.0) if cc3 is not None else (twp <= 0.01):
                 sky = "clear"
@@ -341,6 +436,10 @@ def cmd_collocate(args) -> int:
                 "label": f"{et:%Y%m%dT%H}Z_{iy:02d}_{ix:03d}",
                 "etime": et_iso, "iy": iy, "ix": ix,
                 "lat": glat, "lon": glon,
+                "fp_lat": round(fp_lat, 4), "fp_lon": round(fp_lon, 4),
+                "track_deg": None if not np.isfinite(trk)
+                             else round(trk, 2),
+                "n_box_cells": int(iys.size),
                 "sky": sky, "cc_max": cc_max, "lwp_g": lwp, "iwp_g": iwp,
                 "n_footprints": len(fps),
                 "mean_dt_h": float(np.mean(
@@ -355,6 +454,15 @@ def cmd_collocate(args) -> int:
     n_sky = {s: sum(1 for c in columns if c["sky"] == s)
              for s in ("clear", "partial", "overcast")}
     print(f"sky classes: {n_sky}")
+    nbox = np.array([c["n_box_cells"] for c in columns])
+    if args.box_along_km > 0 and args.box_cross_km > 0:
+        print(f"footprint box +/-{args.box_along_km:g} km along track x "
+              f"+/-{args.box_cross_km:g} km across: "
+              f"{int(np.median(nbox))} cells/column median "
+              f"(min {nbox.min()}, max {nbox.max()}); "
+              f"{int((nbox == 1).sum())} columns fell back to nearest-cell")
+    else:
+        print("footprint box disabled: nearest-cell point collocation")
 
     # test set: clear columns with the most footprints (best obs averaging);
     # overcast ranked by water path, alternating ice- and liquid-dominated so
@@ -385,6 +493,7 @@ def cmd_collocate(args) -> int:
     path = collocation_path(cfg, args.year, args.month, args.sat)
     path.write_text(json.dumps({
         "year": args.year, "month": args.month, "sat": args.sat,
+        "box_along_km": args.box_along_km, "box_cross_km": args.box_cross_km,
         "n_columns": len(columns), "sky_counts": n_sky,
         "columns": columns}, indent=1))
     print(f"wrote {path}")
@@ -417,33 +526,49 @@ def cmd_prep(args) -> int:
     print(f"simulation range {wvl_lo_nm / 1000.0:.2f}-{wvl_hi_nm / 1000.0:.2f} um "
           f"(usable TIRS{args.sat} channels + margin)")
 
+    # the averaging box the collocation was built with (absent/0 in older
+    # point-collocation files, which then reproduce single-cell behavior)
+    box_along = float(coll.get("box_along_km", 0.0))
+    box_cross = float(coll.get("box_cross_km", 0.0))
+
     rean_cache = {}
     columns = []
     for col in [c for c in coll["columns"] if c["selected"]]:
         et = dt.datetime.fromisoformat(col["etime"])
         if et.date() not in rean_cache:
-            rean_cache[et.date()] = (open_era5(plev_path(cfg, et.date())),
-                                     open_era5(sfc_path(cfg, et.date())))
-        plev, sfc = rean_cache[et.date()]
+            plev_ds = open_era5(plev_path(cfg, et.date()))
+            rean_cache[et.date()] = (plev_ds,
+                                     open_era5(sfc_path(cfg, et.date())),
+                                     GridIndex(plev_ds),
+                                     area_weights(plev_ds))
+        plev, sfc, gidx, aw = rean_cache[et.date()]
         iy, ix = col["iy"], col["ix"]
         dims = hdims(plev)
         p5 = plev.sel(valid_time=et).transpose("pressure_level", *dims)
         s5 = sfc.sel(valid_time=et).transpose(*dims)
         p = p5["pressure_level"].values.astype(float)
-        # lazy per-cell slices: [iy, ix] BEFORE .values so the backend reads
-        # one column, not the full (level, y, x) field per selected column
-        sp_hpa = float(s5["sp"][iy, ix].values) / 100.0
-        t2m = float(s5["t2m"][iy, ix].values)
-        skt = float(s5["skt"][iy, ix].values)
-        # above ground AND finite (MERRA-2 masks below-ground and marginal
-        # near-surface levels to NaN; ERA5 extrapolates instead)
-        above = (p <= sp_hpa) & np.isfinite(p5["t"][:, iy, ix].values)
-        cols = {v: p5[v][:, iy, ix].values[above].astype(float)
+        # the same cells the collocation classified: footprint box when
+        # enabled, else the single nearest cell. read_box slices the
+        # bounding hyperslab BEFORE .values so the backend never
+        # materializes a full (level, y, x) field per column
+        iys, ixs, w = box_cells(gidx, aw, col.get("fp_lat"),
+                                col.get("fp_lon"), col.get("track_deg"),
+                                iy, ix, box_along, box_cross)
+        sp_hpa = float(wnanmean(read_box(s5["sp"], dims, iys, ixs), w)) / 100.0
+        t2m = float(wnanmean(read_box(s5["t2m"], dims, iys, ixs), w))
+        skt = float(wnanmean(read_box(s5["skt"], dims, iys, ixs), w))
+        prof = {v: wnanmean(read_box(p5[v], dims, iys, ixs), w)
                 for v in ("t", "q", "clwc", "ciwc")}
+        # above ground AND finite (MERRA-2 masks below-ground and marginal
+        # near-surface levels to NaN; ERA5 extrapolates instead; a box mean
+        # is NaN only where every member cell masks the level)
+        above = (p <= sp_hpa) & np.isfinite(prof["t"])
+        cols = {v: a[above].astype(float) for v, a in prof.items()}
         # CARRA-2 publishes no ozone: fall back to the subarctic-winter
         # climatology, as stage 7 does — the profile splice above the model
         # top is afglsw either way, so the ozone description stays seamless
-        cols["o3"] = (p5["o3"][:, iy, ix].values[above].astype(float)
+        cols["o3"] = (wnanmean(read_box(p5["o3"], dims, iys, ixs),
+                               w)[above].astype(float)
                       if "o3" in p5 else afglsw_o3_mmr(p[above]))
 
         label = col["label"]
@@ -468,19 +593,22 @@ def cmd_prep(args) -> int:
 
         columns.append({
             **{k: col[k] for k in ("label", "etime", "iy", "ix", "lat", "lon",
+                                   "fp_lat", "fp_lon", "track_deg",
+                                   "n_box_cells",
                                    "sky", "cc_max", "lwp_g", "iwp_g",
-                                   "n_footprints", "mean_dt_h")},
+                                   "n_footprints", "mean_dt_h") if k in col},
             "skt": skt, "t2m": t2m, "sp_hpa": sp_hpa, "vza": vza,
             "obs_bt": obs_bt,
             "atm_file": atm_file, "ch4_file": ch4_file,
             "wc_file": wc_file, "ic_file": ic_file,
         })
         print(f"  {label}: {col['sky']}, skt {skt:.1f} K, vza {vza:.1f} deg, "
-              f"scenes {sorted(scenes)}")
+              f"box {iys.size} cells, scenes {sorted(scenes)}")
 
     manifest = {
         "year": args.year, "month": args.month, "sat": args.sat,
         "source": cfg["source"],
+        "box_along_km": box_along, "box_cross_km": box_cross,
         "srf_file": str(spath), "emissivity": EMISSIVITY,
         "wavelength_range_nm": [round(wvl_lo_nm), round(wvl_hi_nm)],
         "reff_um": {"liquid": REFF_LIQ_UM, "ice": REFF_ICE_UM},
@@ -1203,6 +1331,486 @@ def cmd_cotscan(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- schematic
+
+def pick_footprint(args, cfgs: dict) -> dict:
+    """Choose and geolocate the walkthrough footprint (schematic/gridmap).
+
+    Picks from the FIRST source's selected clear columns: `--column`
+    overrides; the default maximizes the box-cell count of the WORST
+    source, so every source's panel actually demonstrates averaging (near
+    the orbit apex the track runs almost E-W and a coarse grid's box can
+    hold a single cell). Returns the footprint, its geometry and a
+    lat/lon -> (along, cross) km transform.
+    """
+    import netCDF4 as nc
+
+    sources = list(cfgs)
+    cfg0 = cfgs[sources[0]]
+    coll = json.loads(collocation_path(cfg0, args.year, args.month,
+                                       args.sat).read_text())
+    clear = [c for c in coll["columns"]
+             if c["selected"] and c["sky"] == "clear"]
+    if not clear:
+        sys.exit(f"no selected clear {sources[0]} columns — run collocate")
+
+    def mid_fp(c):
+        fps = sorted(c["footprints"], key=lambda f: f["time"])
+        return fps[len(fps) // 2]
+
+    if args.column:
+        col0 = next(c for c in clear if c["label"] == args.column)
+    else:
+        idx_cache = {}
+
+        def n_cells_worst(c):
+            f = mid_fp(c)
+            if f.get("track_deg") is None:
+                return -1
+            counts = []
+            for s in sources:
+                cad_s = state_cadence_h(cfgs[s])
+                t = dt.datetime.fromisoformat(f["time"])
+                h = int(round((t.hour + t.minute / 60.0) / cad_s)) * cad_s
+                d = (dt.datetime(t.year, t.month, t.day)
+                     + dt.timedelta(hours=h)).date()
+                if (s, d) not in idx_cache:
+                    idx_cache[(s, d)] = GridIndex(
+                        open_era5(plev_path(cfgs[s], d)))
+                iys, _ = idx_cache[(s, d)].box_query(
+                    f["lat"], f["lon"], f["track_deg"],
+                    args.box_along_km, args.box_cross_km)
+                counts.append(iys.size)
+            return min(counts)
+
+        col0 = max(clear, key=lambda c: (n_cells_worst(c),
+                                         c["n_footprints"]))
+    fp = mid_fp(col0)
+    ia, sc = fp["atrack"], fp["scene"]
+    t_obs = dt.datetime.fromisoformat(fp["time"])
+
+    gpath = (Path(cfg0["paths"]["data"]) / "prefire" / f"{args.year:04d}" /
+             f"{args.month:02d}" / fp["granule"])
+    g = nc.Dataset(gpath)
+    geo, b = g["Geometry"], g["BT"]
+    glat = geo["latitude"][:].filled(np.nan)
+    glon = geo["longitude"][:].filled(np.nan)
+    fp_lat, fp_lon = float(glat[ia, sc]), float(glon[ia, sc])
+    vlat = geo["vertex_latitude"][ia, sc, :].filled(np.nan)
+    vlon = geo["vertex_longitude"][ia, sc, :].filled(np.nan)
+    vza = float(geo["viewing_zenith_angle"][ia, sc])
+    trk = track_bearing(glat, glon, ia, sc)
+    bt_obs = b["spectral_BT"][ia, sc, :].filled(np.nan)
+    bt_obs[b["BT_quality_flag"][ia, sc, :].filled(9) != 0] = np.nan
+    g.close()
+    print(f"footprint: {fp['granule']} atrack {ia} scene {sc} — "
+          f"{t_obs:%Y-%m-%d %H:%M} UTC, {fp_lat:.2f}N {fp_lon:.2f}E, "
+          f"vza {vza:.1f} deg, track {trk:.1f} deg (column {col0['label']})")
+
+    def to_track_km(lat, lon):
+        """(along, cross) km relative to the footprint center and track."""
+        d = great_circle_km(fp_lat, fp_lon, lat, lon)
+        beta = np.deg2rad(bearing_deg(fp_lat, fp_lon, lat, lon) - trk)
+        return d * np.cos(beta), d * np.sin(beta)
+
+    return {"fp": fp, "col0": col0, "ia": ia, "sc": sc, "t_obs": t_obs,
+            "fp_lat": fp_lat, "fp_lon": fp_lon, "vlat": vlat, "vlon": vlon,
+            "vza": vza, "trk": trk, "bt_obs": bt_obs,
+            "to_track_km": to_track_km}
+
+
+def cell_corners_latlon(lat2d, lon2d, iys, ixs):
+    """(lat, lon) of each cell's four corners, both shaped (n, 4).
+
+    A corner is the spherical mean of its 2x2 neighbouring cell centers
+    (clamped at the array edge): exact midpoints on a regular lat/lon
+    grid, sub-cell accurate on a projected one. Corner order traverses
+    the quad without crossing.
+    """
+    ny, nx = lat2d.shape
+    la = np.empty((iys.size, 4))
+    lo = np.empty((iys.size, 4))
+    for k, (dy, dx) in enumerate(((0, 0), (0, 1), (1, 1), (1, 0))):
+        y0 = np.clip(iys + dy - 1, 0, ny - 1)
+        y1 = np.clip(iys + dy, 0, ny - 1)
+        x0 = np.clip(ixs + dx - 1, 0, nx - 1)
+        x1 = np.clip(ixs + dx, 0, nx - 1)
+        v = 0.0
+        for yy, xx in ((y0, x0), (y0, x1), (y1, x0), (y1, x1)):
+            phi = np.deg2rad(lat2d[yy, xx])
+            lam = np.deg2rad(lon2d[yy, xx])
+            v = v + np.stack([np.cos(phi) * np.cos(lam),
+                              np.cos(phi) * np.sin(lam), np.sin(phi)], -1)
+        v = v / np.linalg.norm(v, axis=-1, keepdims=True)
+        la[:, k] = np.rad2deg(np.arcsin(np.clip(v[..., 2], -1.0, 1.0)))
+        lo[:, k] = np.rad2deg(np.arctan2(v[..., 1], v[..., 0]))
+    return la, lo
+
+
+def cmd_schematic(args) -> int:
+    """Single-footprint walkthrough figure (er3t_env).
+
+    One PREFIRE footprint, four panels: (a) the oriented averaging box with
+    every source's grid cells inside it, (b, c) the box-mean T and q
+    profiles with the across-cell spread, (d) the footprint's observed
+    channel BT against a fresh clear-sky simulation from each source's
+    box-mean state. Everything is recomputed for THIS footprint (its own
+    box, vza and scene SRF), so the sources are strictly like-for-like on
+    one observation — production columns group nearby footprints and use
+    the group-mean box instead, so numbers here need not match the stats.
+    """
+    import er3t
+
+    sources = args.sources
+    cfgs = {s: load_config(args.config, source=s) for s in sources}
+    cfg0 = cfgs[sources[0]]
+
+    G = pick_footprint(args, cfgs)
+    fp, ia, sc, t_obs = G["fp"], G["ia"], G["sc"], G["t_obs"]
+    fp_lat, fp_lon, trk, vza = G["fp_lat"], G["fp_lon"], G["trk"], G["vza"]
+    vlat, vlon, bt_obs = G["vlat"], G["vlon"], G["bt_obs"]
+    to_track_km = G["to_track_km"]
+
+    srf = load_srf(str(srf_path(cfg0, args.sat)))
+    wvl_lo_nm, wvl_hi_nm = sim_wvl_range_nm(srf)
+    cams = load_cams_profiles(args.year, args.month)
+    if cams is None:
+        cams = {"p_hpa": np.array([1.0, 1100.0]),
+                "x_co2": np.full(2, CO2_2025_PPM * 1e-6),
+                "x_ch4": np.full(2, CH4_2025_PPM * 1e-6),
+                "source": "constants"}
+    tmp = pbt_dir(cfg0, args.year, args.month) / "tmp" / "schematic"
+    tmp.mkdir(parents=True, exist_ok=True)
+    mol_abs = resolve_mol_abs_param(args)
+    lrt_cfg_base = er3t.rtm.lrt.get_lrt_cfg()
+    lrt_cfg_base["mol_abs_param"] = f"reptran {mol_abs}"
+    lrt_cfg_base["number_of_streams"] = args.streams
+    lrt_cfg_base["solar_file"] = None
+    pseudo_manifest = {"wavelength_range_nm": [round(wvl_lo_nm),
+                                               round(wvl_hi_nm)]}
+
+    def wnanstd(a, w, mean):
+        return np.sqrt(wnanmean((a - mean[..., None]) ** 2, w))
+
+    # context window drawn around the box in panel (a)
+    ctx_along, ctx_cross = args.box_along_km + 18.0, args.box_cross_km + 20.0
+
+    per_src, inits = {}, []
+    for src in sources:
+        cfg = cfgs[src]
+        cad = state_cadence_h(cfg)
+        hsnap = int(round((t_obs.hour + t_obs.minute / 60.0) / cad)) * cad
+        et = (dt.datetime(t_obs.year, t_obs.month, t_obs.day)
+              + dt.timedelta(hours=hsnap))
+        plev = open_era5(plev_path(cfg, et.date()))
+        sfc = open_era5(sfc_path(cfg, et.date()))
+        dims = hdims(plev)
+        idx, aw = GridIndex(plev), area_weights(plev)
+        (iy, ix), _ = idx.query(fp_lat, fp_lon)
+        iys, ixs, w = box_cells(idx, aw, fp_lat, fp_lon, trk, iy, ix,
+                                args.box_along_km, args.box_cross_km)
+        cys, cxs = idx.box_query(fp_lat, fp_lon, trk, ctx_along, ctx_cross)
+        in_box = set(zip(iys.tolist(), ixs.tolist()))
+        ctx = [(y, x) for y, x in zip(cys.tolist(), cxs.tolist())
+               if (y, x) not in in_box]
+
+        p5 = plev.sel(valid_time=et).transpose("pressure_level", *dims)
+        s5 = sfc.sel(valid_time=et).transpose(*dims)
+        p = p5["pressure_level"].values.astype(float)
+        sp_hpa = float(wnanmean(read_box(s5["sp"], dims, iys, ixs), w)) / 100.0
+        t2m = float(wnanmean(read_box(s5["t2m"], dims, iys, ixs), w))
+        skt = float(wnanmean(read_box(s5["skt"], dims, iys, ixs), w))
+        prof, spread = {}, {}
+        for v in ("t", "q"):
+            a = read_box(p5[v], dims, iys, ixs)
+            prof[v] = wnanmean(a, w)
+            spread[v] = wnanstd(a, w, prof[v])
+        above = (p <= sp_hpa) & np.isfinite(prof["t"])
+        o3 = (wnanmean(read_box(p5["o3"], dims, iys, ixs), w)[above]
+              if "o3" in p5 else afglsw_o3_mmr(p[above]))
+        label = f"schem_{src}"
+        atm_file, ch4_file, _, _ = build_profile_files(
+            tmp, label, p[above], prof["t"][above], prof["q"][above], o3,
+            t2m, sp_hpa, cams)
+        init = radiance_init(
+            tmp, label, pseudo_manifest,
+            {"ch4_file": ch4_file, "etime": et.isoformat(), "vza": vza},
+            atm_file, None, None, skt, EMISSIVITY, lrt_cfg_base, er3t)
+        inits.append((src, init))
+        per_src[src] = {
+            "etime": et, "p": p, "prof": prof, "spread": spread,
+            "sp": sp_hpa, "skt": skt, "n_cells": int(iys.size),
+            "cells": to_track_km(idx.lat2d[iys, ixs], idx.lon2d[iys, ixs]),
+            "ctx": (to_track_km(idx.lat2d[[y for y, _ in ctx],
+                                          [x for _, x in ctx]],
+                                idx.lon2d[[y for y, _ in ctx],
+                                          [x for _, x in ctx]])
+                    if ctx else (np.array([]), np.array([]))),
+        }
+        plev.close(), sfc.close()
+
+    to_run = [init for _, init in inits
+              if args.overwrite or not (os.path.exists(init.output_file)
+                                        and os.path.getsize(init.output_file) > 50)]
+    if to_run:
+        print(f"running {len(to_run)} uvspec job(s) (reptran {mol_abs}) ...")
+        er3t.rtm.lrt.lrt_run_mp(to_run, Ncpu=min(len(to_run),
+                                                 args.workers or len(to_run)))
+    for src, init in inits:
+        wl_um, rad = read_spectrum(init.output_file)
+        _, per_src[src]["bt_sim"] = channel_bt(srf, sc, wl_um, rad)
+
+    # ---------------------------------------------------------- the figure
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+
+    from reanlib.config import SOURCE_LABELS
+    from reanlib.plotstyle import apply_agu_style, panel_label
+    apply_agu_style()
+
+    fig = plt.figure(figsize=(14.2, 4.1))
+    gs = fig.add_gridspec(1, 4, width_ratios=[1.5, 0.72, 0.72, 1.45],
+                          wspace=0.32)
+    axm, axt, axq, axb = [fig.add_subplot(gs[0, i]) for i in range(4)]
+    MARKER = {"era5": ("s", 22), "merra2": ("D", 55), "carra2": (".", 4)}
+
+    # (a) collocation: FOV, box, grid cells in track coordinates
+    ha, hc = args.box_along_km, args.box_cross_km
+    vx, vy = to_track_km(vlat, vlon)
+    axm.fill(vx, vy, color="0.82", zorder=3, label="TIRS FOV")
+    axm.add_patch(mpatches.Rectangle((-ha, -hc), 2 * ha, 2 * hc, fill=False,
+                                     ls="--", lw=1.1, ec="k", zorder=4))
+    for src in sources:
+        mk, ms = MARKER[src]
+        d = per_src[src]
+        cx, cy = d["ctx"]
+        if cx.size:
+            axm.scatter(cx, cy, marker=mk, s=ms, facecolors="none",
+                        edgecolors=SOURCE_COLOURS[src], linewidths=0.6,
+                        alpha=0.35, zorder=5)
+        axm.scatter(*d["cells"], marker=mk, s=ms, color=SOURCE_COLOURS[src],
+                    zorder=6,
+                    label=f"{SOURCE_LABELS[src]} ({d['n_cells']} cells)")
+    axm.plot(0, 0, "k*", ms=9, zorder=7, label="FOV center")
+    axm.annotate("", xy=(ha - 4, -hc - 8), xytext=(ha - 34, -hc - 8),
+                 arrowprops=dict(arrowstyle="->", lw=1.2))
+    axm.text(ha - 19, -hc - 12.5, "ground track", ha="center", fontsize=6.5)
+    axm.text(0, hc + 2.0, f"$\\pm${ha:g} $\\times$ $\\pm${hc:g} km",
+             ha="center", va="bottom", fontsize=6.5)
+    axm.set_xlim(-ctx_along - 4, ctx_along + 4)
+    axm.set_ylim(-ctx_cross - 12, ctx_cross + 6)
+    axm.set_aspect("equal")
+    axm.set_xlabel("along-track distance (km)")
+    axm.set_ylabel("cross-track (km)")
+    axm.legend(fontsize=5.6, loc="upper left", framealpha=0.9,
+               handletextpad=0.4, borderpad=0.4, labelspacing=0.35)
+    axm.set_title("collocation: cells averaged per source", fontsize=8)
+
+    # (b, c) box-mean profiles with across-cell spread
+    for src in sources:
+        d = per_src[src]
+        ok = np.isfinite(d["prof"]["t"]) & (d["p"] >= 90.0)
+        c = SOURCE_COLOURS[src]
+        axt.fill_betweenx(d["p"][ok], (d["prof"]["t"] - d["spread"]["t"])[ok],
+                          (d["prof"]["t"] + d["spread"]["t"])[ok],
+                          color=c, alpha=0.18, lw=0)
+        axt.plot(d["prof"]["t"][ok], d["p"][ok], "-", color=c, lw=1.1)
+        axt.plot(d["skt"], d["sp"], "v", color=c, ms=4, mec="k", mew=0.4)
+        q = d["prof"]["q"] * 1e3
+        s = d["spread"]["q"] * 1e3
+        axq.fill_betweenx(d["p"][ok], (q - s)[ok], (q + s)[ok],
+                          color=c, alpha=0.18, lw=0)
+        axq.plot(q[ok], d["p"][ok], "-", color=c, lw=1.1)
+    for ax in (axt, axq):
+        ax.set_ylim(1040, 90)
+        ax.set_yticks([1000, 850, 700, 500, 300, 100])
+    axt.set_ylabel("pressure (hPa)")
+    axq.set_yticklabels([])
+    axt.set_xlabel("temperature (K)")
+    axq.set_xlabel("specific humidity (g/kg)")
+    axt.set_title("box-mean T $\\pm1\\sigma$", fontsize=8)
+    axq.set_title("box-mean q $\\pm1\\sigma$", fontsize=8)
+    axt.text(0.05, 0.03, "$\\blacktriangledown$ skin T",
+             transform=axt.transAxes, fontsize=6.5)
+
+    # (d) observed vs simulated channel BT
+    wl_sc = srf["mean_wl"][:, sc]
+    ok_obs = np.isfinite(wl_sc) & np.isfinite(bt_obs)
+    order = np.argsort(wl_sc[ok_obs])
+    axb.plot(wl_sc[ok_obs][order], bt_obs[ok_obs][order], "o-", color="k",
+             ms=3.2, lw=0.8, label="PREFIRE obs", zorder=6)
+    for src in sources:
+        bt_sim = per_src[src]["bt_sim"]
+        okb = ok_obs & np.isfinite(bt_sim)
+        dmean = float(np.mean((bt_sim - bt_obs)[okb]))
+        oks = np.isfinite(wl_sc) & np.isfinite(bt_sim)
+        o = np.argsort(wl_sc[oks])
+        axb.plot(wl_sc[oks][o], bt_sim[oks][o], "o-",
+                 color=SOURCE_COLOURS[src], ms=2.6, lw=0.8, mfc="none",
+                 label=f"{SOURCE_LABELS[src]} sim ({dmean:+.1f} K)")
+        print(f"  {src:7s}: {per_src[src]['n_cells']:3d} cells, "
+              f"state {per_src[src]['etime']:%HZ}, skt "
+              f"{per_src[src]['skt']:.1f} K, sim - obs {dmean:+.2f} K")
+    axb.set_xlabel("channel wavelength (µm)")
+    axb.set_ylabel("brightness temperature (K)")
+    axb.legend(fontsize=6.2, loc="best")
+    axb.set_title("clear-sky BT closure at this footprint", fontsize=8)
+
+    for k, ax in enumerate((axm, axt, axq, axb)):
+        panel_label(ax, chr(97 + k), outside=True)
+    fig.suptitle(
+        f"PREFIRE SAT{args.sat} footprint walkthrough — "
+        f"{fp['granule'].split('_')[-1].split('.')[0]} atrack {ia} scene "
+        f"{sc}, {t_obs:%Y-%m-%d %H:%M} UTC, {fp_lat:.2f}$^\\circ$N "
+        f"{fp_lon:.2f}$^\\circ$E, vza {vza:.1f}$^\\circ$",
+        y=1.03, fontsize=10)
+    outdir = figures_dir(cfg0).parent
+    fpath = outdir / (f"prefire_bt_schematic_{args.year:04d}"
+                      f"{args.month:02d}_sat{args.sat}.png")
+    fig.savefig(fpath, dpi=300, bbox_inches="tight")
+    print(f"wrote {fpath}")
+    return 0
+
+
+# ---------------------------------------------------------------- gridmap
+
+def cmd_gridmap(args) -> int:
+    """Grid-cell polygon map for one footprint (era5 env, no RT).
+
+    Draws every source's actual cell polygons (four corners each) around
+    the averaging box: panel (a) overlays all sources to test whether the
+    full grids stay legible in one frame; the remaining panels repeat one
+    source per panel. Cells inside the box are face-filled; outside, edges
+    only. Same footprint pick as `schematic`.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import PolyCollection
+
+    from reanlib.config import SOURCE_LABELS
+    from reanlib.plotstyle import apply_agu_style, panel_label
+
+    sources = args.sources
+    cfgs = {s: load_config(args.config, source=s) for s in sources}
+    cfg0 = cfgs[sources[0]]
+
+    G = pick_footprint(args, cfgs)
+    t_obs, fp_lat, fp_lon, trk = (G["t_obs"], G["fp_lat"], G["fp_lon"],
+                                  G["trk"])
+    to_track_km = G["to_track_km"]
+
+    ha, hc = args.box_along_km, args.box_cross_km
+    view_a, view_c = ha + 18.0, hc + 20.0     # axes limits
+    qry_a, qry_c = view_a + 45.0, view_c + 45.0   # polygons past the frame
+
+    def polys(idx, iys, ixs):
+        la, lo = cell_corners_latlon(idx.lat2d, idx.lon2d, iys, ixs)
+        xs, ys = to_track_km(la, lo)
+        return np.dstack([xs, ys])
+
+    per_src = {}
+    for src in sources:
+        cfg = cfgs[src]
+        cad = state_cadence_h(cfg)
+        hsnap = int(round((t_obs.hour + t_obs.minute / 60.0) / cad)) * cad
+        et = (dt.datetime(t_obs.year, t_obs.month, t_obs.day)
+              + dt.timedelta(hours=hsnap))
+        plev = open_era5(plev_path(cfg, et.date()))
+        idx, aw = GridIndex(plev), area_weights(plev)
+        (iy, ix), _ = idx.query(fp_lat, fp_lon)
+        iys, ixs, _ = box_cells(idx, aw, fp_lat, fp_lon, trk, iy, ix, ha, hc)
+        qys, qxs = idx.box_query(fp_lat, fp_lon, trk, qry_a, qry_c)
+        in_box = set(zip(iys.tolist(), ixs.tolist()))
+        out = [(y, x) for y, x in zip(qys.tolist(), qxs.tolist())
+               if (y, x) not in in_box]
+        oys = np.array([y for y, _ in out], dtype=int)
+        oxs = np.array([x for _, x in out], dtype=int)
+        per_src[src] = {
+            "n": int(iys.size),
+            "in": polys(idx, iys, ixs),
+            "out": (polys(idx, oys, oxs) if out else np.empty((0, 4, 2))),
+            "cin": to_track_km(idx.lat2d[iys, ixs], idx.lon2d[iys, ixs]),
+            "cout": (to_track_km(idx.lat2d[oys, oxs], idx.lon2d[oys, oxs])
+                     if out else (np.empty(0), np.empty(0))),
+        }
+        plev.close()
+        print(f"  {src:7s}: {iys.size} cells in box, "
+              f"{len(out)} drawn around it")
+
+    apply_agu_style()
+    n_pan = 1 + len(sources)
+    fig, axes = plt.subplots(1, n_pan, figsize=(3.55 * n_pan, 3.55))
+    vx, vy = to_track_km(G["vlat"], G["vlon"])
+    LW = {"era5": 0.7, "merra2": 0.9, "carra2": 0.25}
+
+    def draw_source(ax, src, faded):
+        d = per_src[src]
+        c = SOURCE_COLOURS[src]
+        ax.add_collection(PolyCollection(
+            d["out"], facecolors="none", edgecolors=c,
+            linewidths=LW[src], alpha=0.30 if not faded else 0.18))
+        ax.add_collection(PolyCollection(
+            d["in"], facecolors=c, edgecolors=c, linewidths=LW[src],
+            alpha=0.35 if not faded else 0.20))
+
+    def draw_frame(ax, title):
+        ax.fill(vx, vy, color="0.45", alpha=0.55, zorder=5)
+        ax.add_patch(mpatches.Rectangle((-ha, -hc), 2 * ha, 2 * hc,
+                                        fill=False, ls="--", lw=1.1,
+                                        ec="k", zorder=6))
+        ax.plot(0, 0, "k*", ms=8, zorder=7)
+        ax.set_xlim(-view_a, view_a)
+        ax.set_ylim(-view_c - 8, view_c + 4)
+        ax.set_aspect("equal")
+        ax.set_title(title, fontsize=8)
+        ax.set_xlabel("along-track (km)")
+
+    # (a) all sources in one frame: coarse grids on top of the 2.5 km mesh
+    for src in sorted(sources, key=lambda s: -per_src[s]["n"]):
+        draw_source(axes[0], src, faded=False)
+    draw_frame(axes[0], "all sources")
+    axes[0].set_ylabel("cross-track (km)")
+    axes[0].legend(handles=[
+        mpatches.Patch(facecolor=SOURCE_COLOURS[s], alpha=0.55,
+                       label=f"{SOURCE_LABELS[s]} ({per_src[s]['n']})")
+        for s in sources] + [
+        mpatches.Patch(facecolor="0.45", alpha=0.55, label="TIRS FOV")],
+        fontsize=5.6, loc="lower left", framealpha=0.9,
+        handletextpad=0.4, borderpad=0.4, labelspacing=0.35)
+
+    # one source per panel, with the cell centers the box rule tests
+    DOT = {"era5": 5.0, "merra2": 8.0, "carra2": 0.7}
+    for k, src in enumerate(sources, start=1):
+        draw_source(axes[k], src, faded=False)
+        d = per_src[src]
+        cx, cy = d["cout"]
+        if cx.size:
+            axes[k].scatter(cx, cy, s=DOT[src] * 0.7, c="0.4", marker=".",
+                            alpha=0.5, linewidths=0, zorder=4)
+        axes[k].scatter(*d["cin"], s=DOT[src], c="k", marker=".",
+                        linewidths=0, zorder=6)
+        draw_frame(axes[k], f"{SOURCE_LABELS[src]} "
+                            f"({per_src[src]['n']} cells in box)")
+        axes[k].set_yticklabels([])
+
+    for k, ax in enumerate(axes):
+        panel_label(ax, chr(97 + k), outside=True)
+    fig.suptitle(
+        f"grid cells inside the $\\pm${ha:g} $\\times$ $\\pm${hc:g} km "
+        f"box — {t_obs:%Y-%m-%d %H:%M} UTC, {fp_lat:.2f}$^\\circ$N "
+        f"{fp_lon:.2f}$^\\circ$E", y=0.86, fontsize=10)
+    outdir = figures_dir(cfg0).parent
+    fpath = outdir / (f"prefire_bt_gridmap_{args.year:04d}"
+                      f"{args.month:02d}_sat{args.sat}.png")
+    fig.savefig(fpath, dpi=300, bbox_inches="tight")
+    print(f"wrote {fpath}")
+    return 0
+
+
 # ---------------------------------------------------------------- compare
 
 #: channels are matched across instruments by wavelength; half the ~0.84-um
@@ -1362,6 +1970,12 @@ def cmd_compare(args) -> int:
              f"compare_sat{sat_a}{sat_b}_{args.year:04d}{args.month:02d}.json")
     jpath.write_text(json.dumps(out, indent=1))
     print(f"wrote {jpath}")
+
+    if not int(tight.sum()):
+        print(f"no shared columns with obs within {args.max_dt:g} h of each "
+              "other — cross-instrument figure skipped (JSON written; widen "
+              "--max-dt to plot)")
+        return 0
 
     # figure: mean spectra, per-channel difference, window-BT scatter
     apply_agu_style()
@@ -1650,6 +2264,7 @@ def cmd_sources(args) -> int:
     """
     import matplotlib
     matplotlib.use("Agg")
+    import matplotlib.patches as mpatches
     import matplotlib.pyplot as plt
 
     from reanlib.config import SOURCE_LABELS
@@ -1724,8 +2339,13 @@ def cmd_sources(args) -> int:
     axes[1].set_xticklabels([SOURCE_LABELS[s] for s in per_source],
                             fontsize=7)
     axes[1].set_ylabel("sim $-$ obs BT (K)")
-    axes[1].set_title("clear bias ± rmse (solid) /\novercast bias (faded)",
-                      fontsize=8)
+    axes[1].set_title("bias by sky class", fontsize=8)
+    # saturation encodes the sky class; neutral proxies so the legend does
+    # not single out one source's colour
+    axes[1].legend(handles=[
+        mpatches.Patch(facecolor="0.35", label="clear bias ± rmse"),
+        mpatches.Patch(facecolor="0.35", alpha=0.45, label="overcast bias"),
+    ], fontsize=6.5, loc="best")
     for k, ax in enumerate(axes):
         panel_label(ax, chr(97 + k), outside=True)
     fig.suptitle(f"PREFIRE TIRS{args.sat} vs reanalysis-driven sims — "
@@ -1904,6 +2524,14 @@ def main(argv=None) -> int:
     sp.add_argument("--cadence", type=int, default=None,
                     help="state snap cadence in hours (default: 6 for ERA5, "
                          "3 for MERRA-2)")
+    sp.add_argument("--box-along-km", type=float, default=BOX_ALONG_KM,
+                    help="footprint averaging-box half-width along the "
+                         "ground track [km]; with --box-cross-km 0 0 "
+                         "restores nearest-cell point collocation "
+                         f"(default {BOX_ALONG_KM:g})")
+    sp.add_argument("--box-cross-km", type=float, default=BOX_CROSS_KM,
+                    help="footprint averaging-box half-width across track "
+                         f"[km] (default {BOX_CROSS_KM:g})")
     sp.set_defaults(func=cmd_collocate)
 
     sp = sub.add_parser("prep", help="profile files + manifest")
@@ -1949,6 +2577,40 @@ def main(argv=None) -> int:
     sp.add_argument("--workers", type=int, default=None)
     sp.add_argument("--overwrite", action="store_true")
     sp.set_defaults(func=cmd_jacobian)
+
+    sp = sub.add_parser("schematic",
+                        help="single-footprint walkthrough figure (er3t_env)")
+    add_common(sp)
+    sp.add_argument("--sources", nargs="*",
+                    default=["era5", "merra2", "carra2"],
+                    help="sources to overlay (first one supplies the "
+                         "footprint pick)")
+    sp.add_argument("--column", default=None,
+                    help="selected clear column label (of the first source) "
+                         "to take the footprint from; default: the clear "
+                         "column with most footprints")
+    sp.add_argument("--box-along-km", type=float, default=BOX_ALONG_KM)
+    sp.add_argument("--box-cross-km", type=float, default=BOX_CROSS_KM)
+    sp.add_argument("--streams", type=int, default=16)
+    sp.add_argument("--mol-abs-param", default=None,
+                    choices=["coarse", "medium", "fine"])
+    sp.add_argument("--force-local", action="store_true",
+                    help=argparse.SUPPRESS)
+    sp.add_argument("--workers", type=int, default=None)
+    sp.add_argument("--overwrite", action="store_true")
+    sp.set_defaults(func=cmd_schematic)
+
+    sp = sub.add_parser("gridmap",
+                        help="footprint grid-cell polygon map (era5 env)")
+    add_common(sp)
+    sp.add_argument("--sources", nargs="*",
+                    default=["era5", "merra2", "carra2"])
+    sp.add_argument("--column", default=None,
+                    help="selected clear column label (of the first source) "
+                         "to take the footprint from")
+    sp.add_argument("--box-along-km", type=float, default=BOX_ALONG_KM)
+    sp.add_argument("--box-cross-km", type=float, default=BOX_CROSS_KM)
+    sp.set_defaults(func=cmd_gridmap)
 
     sp = sub.add_parser("cotscan",
                         help="BT + Jacobians vs synthetic-cloud COT (er3t_env)")

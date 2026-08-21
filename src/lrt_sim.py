@@ -225,7 +225,8 @@ def afglsw_o3_mmr(p_hpa: np.ndarray) -> np.ndarray:
 
 
 def build_profile_files(out_dir: Path, label: str, p_hpa, T, q, o3_mmr,
-                        t2m: float, sp_hpa: float, cams) -> "tuple[str, str]":
+                        t2m: float, sp_hpa: float, cams
+                        ) -> "tuple[str, str, np.ndarray, np.ndarray]":
     """Write the 9-column atmosphere file and the CH4 mol_file for one pixel.
 
     p_hpa/T/q/o3_mmr are surface-first (descending pressure) above-ground level
